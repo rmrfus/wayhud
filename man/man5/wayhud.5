@@ -1,0 +1,311 @@
+.TH WAYHUD 5 "2026-09-01" "wayhud" "File Formats"
+.SH NAME
+wayhud \- configuration file for wayhud(1)
+.SH SYNOPSIS
+.I $XDG_CONFIG_HOME/wayhud/config.toml
+.PP
+.RI ( ~/.config/wayhud/config.toml
+when
+.B XDG_CONFIG_HOME
+is unset.)
+.SH DESCRIPTION
+The file is TOML. It holds one table,
+.BR style ,
+whose sub\-tables are named presets; a preset is chosen at run time with
+.BR "wayhud \-\-style " \fINAME\fR
+and defaults to
+.BR default .
+.PP
+A missing file is not an error \- every preset then consists entirely of the
+built\-in defaults listed below. A file that fails to parse
+.I is
+an error, as is a key the program does not recognise: a misspelt setting is
+reported rather than silently ignored.
+.PP
+Presets do
+.B not
+inherit from one another. Any field a preset leaves out falls back to the
+built\-in default, never to
+.BR [style.default] .
+This is deliberate \- a preset is fully described by its own block, with no
+second table to hold in your head.
+.PP
+Command\-line flags override the selected preset for that invocation; see
+.BR wayhud (1).
+.SH VALUE TYPES
+.TP
+.I colour
+Any colour GTK's CSS parser accepts:
+.BR #b8bb26 ,
+.BR #b8bb26cc ,
+.BR "rgba(184,187,38,0.8)" ,
+or a named colour such as
+.BR green .
+.TP
+.I font
+A Pango font description \- family, optional style words, then size in
+points, e.g.
+.BR "\(dqLythMono Nerd Font 72\(dq" .
+The family must match fontconfig exactly; one that does not exist falls back
+to the default font without a word of warning.
+.TP
+.I pixels
+Logical pixels, i.e. before the output's scale factor is applied. On a
+.B scale 2
+display a value of 64 covers 128 device pixels.
+.SH KEYS
+All keys below live directly in a
+.BI [style. NAME ]
+table.
+.SS Text
+.TP
+.B font
+.RI ( font ,
+default
+.BR "\(dqLythMono Nerd Font 72\(dq" )
+.br
+Typeface and size of the message.
+.TP
+.B color
+.RI ( colour ,
+default
+.BR \(dq#b8bb26\(dq )
+.br
+Fill colour of the glyphs.
+.TP
+.B outline
+.RI ( colour ,
+default
+.BR \(dq#1d2021\(dq )
+.br
+Colour of the stroke around each glyph. Omit the key entirely to draw the
+text flat, with no outline pass at all.
+.TP
+.B outline_width
+.RI ( float ,
+.IR pixels ;
+default: derived from the font size)
+.br
+Width of that stroke. Left unset it is the font size divided by 14, which
+keeps the visible halo a fixed fraction of the stem thickness across sizes;
+a constant that looks like a fine contour at 72pt reads as fake bold at
+24pt. Set it to pin an exact width. Must not be negative.
+.TP
+.B line_align
+.RB ( left " | " center " | " right ,
+default
+.BR left )
+.br
+How lines are aligned relative to each other inside the text block. This is
+independent of where the block itself sits.
+.SS Placement
+.TP
+.B halign
+.RB ( start " | " center " | " end ,
+default
+.BR center )
+.br
+Horizontal placement of the text block on the output.
+.B start
+is the left edge,
+.B end
+the right.
+.TP
+.B valign
+.RB ( start " | " center " | " end ,
+default
+.BR center )
+.br
+Vertical placement.
+.B start
+is the top edge,
+.B end
+the bottom.
+.TP
+.B margin
+.RI ( integer ,
+.IR pixels ;
+default
+.BR 64 )
+.br
+Gap between the text block and the edge it is anchored to. An axis set to
+.B center
+is centred by the compositor and ignores this value.
+.SS Timing
+.TP
+.B timeout_ms
+.RI ( integer ,
+milliseconds; default
+.BR 5000 )
+.br
+How long the fully revealed text stays up. Measured from the
+.I end
+of the reveal, not from start\-up, so a slow typewriter does not eat into
+the reading time. Capped at 3600000 (one hour): there is no way to dismiss a
+HUD early, so an accidental extra digit would strand it on screen.
+.TP
+.B reveal
+.RI ( table ,
+default
+.BR "{ kind = \(dqtypewriter\(dq, cps = 28, cursor = true }" )
+.br
+How the text appears. See
+.B REVEAL
+below.
+.TP
+.B vanish
+.RI ( table ,
+default
+.BR "{ kind = \(dqcollapse\(dq, ms = 420 }" )
+.br
+How it goes away. See
+.B VANISH
+below.
+.SS Sound
+.TP
+.B sound
+.RI ( table ,
+default
+.BR "{ enabled = true, freq = 2100.0, decay_ms = 38.0, gain = 0.22, every = 1 }" )
+.br
+The typewriter blip. See
+.B SOUND
+below.
+.SH REVEAL
+A table with a
+.B kind
+key selecting the variant.
+.TP
+.B { kind = "instant" }
+The whole message appears at once.
+.TP
+.BR "{ kind = \(dqtypewriter\(dq, cps = " \fIF\fR ", cursor = " \fIBOOL\fR " }"
+Typed out character by character.
+.B cps
+(float, default 28) is the speed in characters per second; a value of zero
+or less is treated as
+.BR instant .
+.B cursor
+(boolean, default true) draws a block caret at the write head, which keeps
+blinking while the text is held.
+.SH VANISH
+A table with a
+.B kind
+key. Every variant except
+.B instant
+takes
+.B ms
+(integer, default 420) for its duration.
+.TP
+.B instant
+Gone on the frame the hold expires.
+.TP
+.B fade
+Alpha to zero.
+.TP
+.B collapse
+CRT power\-off: the text squashes towards its middle line, blooms slightly
+wider, washes to white and blinks out.
+.TP
+.B wash
+A soft edge sweeps through the text, erasing as it passes. Takes an extra
+.B dir
+of
+.B down
+(default) or
+.BR up .
+.TP
+.B untype
+The caret walks back and eats the text. The only vanish that makes a sound,
+because it is typing; it gets a caret even when the reveal was instant.
+.TP
+.B dissolve
+The glyphs fall apart into blocks, in an order that is pseudo\-random but
+fixed, so the decay is stable rather than flickering.
+.SH SOUND
+The blip is synthesised at run time rather than loaded from a file. The knob
+names match
+.BR blyamk (1),
+so a sound dialled in there with
+.B blyamk \-v
+transfers over verbatim.
+.TP
+.B enabled
+(boolean, default
+.BR true )
+.br
+Whether to make any noise at all.
+.B \-\-no\-sound
+overrides this to false.
+.TP
+.B freq
+(float, Hz; default
+.BR 2100.0 )
+.br
+Base frequency of the blip \- its overall pitch.
+.TP
+.B decay_ms
+(float, milliseconds; default
+.BR 38.0 )
+.br
+Ring\-out time. Longer values turn a click into a tone.
+.TP
+.B gain
+(float, 0\(en1; default
+.BR 0.22 )
+.br
+Peak amplitude of a single blip. Overlapping blips sum, and the mix is
+clamped rather than limited, so a high gain at a high
+.B cps
+will clip.
+.TP
+.B every
+(integer, at least 1; default
+.BR 1 )
+.br
+Blip once every N revealed characters. Whitespace never blips \- a space bar
+on a movie terminal does not click, and newlines would stutter.
+.SH EXAMPLE
+A complete file with every key at its default is shipped as
+.I config.example.toml
+in the source distribution.
+.PP
+.RS
+.nf
+[style.default]
+font = "LythMono Nerd Font 72"
+color = "#b8bb26"
+outline = "#1d2021"
+halign = "center"
+valign = "center"
+timeout_ms = 5000
+reveal = { kind = "typewriter", cps = 28, cursor = true }
+vanish = { kind = "collapse", ms = 420 }
+
+# Louder, redder, and it does not linger.
+[style.alert]
+color = "#fb4934"
+font = "LythMono Nerd Font 96"
+timeout_ms = 8000
+vanish = { kind = "wash", ms = 300, dir = "up" }
+
+# Self\-destructing note: types in, sits, clicks its way back out.
+[style.spy]
+color = "#8ec07c"
+reveal = { kind = "typewriter", cps = 18, cursor = true }
+vanish = { kind = "untype", ms = 900 }
+
+# Small, cornered, silent \- for something that just needs to be on screen.
+[style.corner]
+font = "LythMono Nerd Font 24"
+halign = "end"
+valign = "end"
+margin = 32
+reveal = { kind = "instant" }
+vanish = { kind = "fade", ms = 200 }
+sound = { enabled = false }
+.fi
+.RE
+.SH SEE ALSO
+.BR wayhud (1),
+.BR pango-markup (7)

@@ -46,6 +46,7 @@
 
           postInstall = ''
             install -Dm644 man/man1/wayhud.1 $out/share/man/man1/wayhud.1
+            install -Dm644 man/man5/wayhud.5 $out/share/man/man5/wayhud.5
           '';
 
           meta = with pkgs.lib; {

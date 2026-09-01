@@ -61,7 +61,8 @@ install -Dm644 man/man1/wayhud.1 ~/.local/share/man/man1/wayhud.1
 
 ## Usage
 
-See `man wayhud` for the full reference.
+See `man 1 wayhud` for the full reference, and `man 5 wayhud` for the config
+file format.
 
 | Flag             | Default   | Meaning                                                  |
 | ---------------- | --------- | -------------------------------------------------------- |
@@ -111,17 +112,20 @@ disappear with nothing touching them.
 
 ## Config
 
-`$XDG_CONFIG_HOME/wayhud/config.toml`, a flat map of named presets. Presets do
-**not** inherit from each other: every field left unset falls back to the
-built-in default, never to `[style.default]`. A missing file is fine; a
-malformed one — or an unknown key — is an error, so a typo gets reported
-instead of quietly doing nothing.
+`$XDG_CONFIG_HOME/wayhud/config.toml`, a flat map of named presets picked with
+`--style`. A missing file is fine — every preset is then just the built-in
+defaults. A malformed one, or an unknown key, is an error: a typo gets
+reported instead of quietly doing nothing.
+
+Presets do **not** inherit from each other. Any field a preset leaves out falls
+back to the built-in default, never to `[style.default]` — a preset is fully
+described by its own block.
 
 ```toml
 [style.default]
 font = "LythMono Nerd Font 72"
 color = "#b8bb26"
-outline = "#1d2021"          # width scales with the font unless pinned
+outline = "#1d2021"
 timeout_ms = 5000
 reveal = { kind = "typewriter", cps = 28, cursor = true }
 vanish = { kind = "collapse", ms = 420 }
@@ -129,11 +133,39 @@ vanish = { kind = "collapse", ms = 420 }
 [style.alert]
 color = "#fb4934"
 font = "LythMono Nerd Font 96"
-vanish = { kind = "wash-up", ms = 300 }
+vanish = { kind = "wash", ms = 300, dir = "up" }
 ```
 
-See [`config.example.toml`](config.example.toml) for every key with its
-default.
+### Keys
+
+| Key             | Type                          | Default                      | Meaning                                                  |
+| --------------- | ----------------------------- | ---------------------------- | -------------------------------------------------------- |
+| `font`          | Pango description             | `"LythMono Nerd Font 72"`    | Family and size in points                                 |
+| `color`         | CSS colour                    | `"#b8bb26"`                  | Glyph fill                                                |
+| `outline`       | CSS colour                    | `"#1d2021"`                  | Stroke colour; omit the key for no outline                |
+| `outline_width` | float, logical px             | font size / 14               | Stroke width; unset it scales with the font               |
+| `halign`        | `start` `center` `end`        | `center`                     | Horizontal placement on the output                        |
+| `valign`        | `start` `center` `end`        | `center`                     | Vertical placement                                        |
+| `margin`        | int, logical px               | `64`                         | Gap from the anchored edge; ignored on a centred axis      |
+| `line_align`    | `left` `center` `right`       | `left`                       | Alignment of lines inside the block                       |
+| `timeout_ms`    | int, ms (max 3600000)         | `5000`                       | Hold, counted from the END of the reveal                  |
+| `reveal`        | table                         | typewriter, 28 cps, cursor   | How the text appears                                      |
+| `vanish`        | table                         | collapse, 420 ms             | How it goes away                                          |
+| `sound`         | table                         | on, 2100 Hz, gain 0.22       | The typewriter blip                                       |
+
+`reveal` is `{ kind = "instant" }` or
+`{ kind = "typewriter", cps = F, cursor = BOOL }`.
+
+`vanish` takes the kinds listed above plus `ms`; `wash` carries an extra
+`dir` of `down` or `up`.
+
+`sound` is `{ enabled, freq, decay_ms, gain, every }` — knob names match
+[blyamk](https://github.com/rmrfus/blyamk), so a sound dialled in there with
+`blyamk -v` transfers verbatim. `every = N` blips once per N characters;
+whitespace never blips.
+
+Full reference with every value type and range: **`man 5 wayhud`**, or
+[`config.example.toml`](config.example.toml) for a working file.
 
 Note that the font family has to match fontconfig exactly. `LythMono Nerd Font`
 resolves; `Lyth Mono` silently falls back to the default font — as does any

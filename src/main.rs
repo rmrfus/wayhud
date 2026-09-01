@@ -22,7 +22,7 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use gtk::glib;
 
-use config::{Align, Config, Dir, Reveal, Style, Vanish};
+use config::{Align, Config, Dir, Reveal, Style, Vanish, MAX_TIMEOUT_MS};
 use hud::Hud;
 use outputs::OutputSpec;
 
@@ -85,10 +85,6 @@ struct Cli {
     #[arg(long)]
     config: Option<PathBuf>,
 }
-
-/// One hour. Long enough for anything a heads-up message is for, short enough
-/// that a typo can't strand the overlay on screen.
-const MAX_TIMEOUT_S: f64 = 3600.0;
 
 fn main() -> ExitCode {
     match run() {
@@ -235,9 +231,10 @@ fn apply_overrides(style: &mut Style, cli: &Cli) -> Result<()> {
         // An upper bound as well as a lower one: the value comes from argv,
         // and there is no way to dismiss a HUD early, so a fat-fingered
         // exponent would pin it to the screen for years.
+        let max_s = MAX_TIMEOUT_MS as f64 / 1000.0;
         anyhow::ensure!(
-            (0.0..=MAX_TIMEOUT_S).contains(&t),
-            "--timeout must be between 0 and {MAX_TIMEOUT_S} seconds"
+            (0.0..=max_s).contains(&t),
+            "--timeout must be between 0 and {max_s} seconds"
         );
         style.timeout_ms = (t * 1000.0) as u64;
     }

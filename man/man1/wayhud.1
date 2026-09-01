@@ -168,46 +168,17 @@ reads
 A missing file is fine; a malformed one is an error, as is an unknown key,
 so a typo is reported instead of being silently ignored.
 .PP
-The file is a flat map of named presets. Presets do
+The file is a flat map of named presets, selected with
+.BR \-\-style .
+Presets do
 .I not
 inherit from one another: every field left unset falls back to the built\-in
 default, never to
 .BR [style.default] .
+Command\-line flags override the selected preset for that invocation.
 .PP
-.RS
-.nf
-[style.default]
-font = "LythMono Nerd Font 72"
-color = "#b8bb26"
-outline = "#1d2021"
-# outline_width = 5.0    # omit: scales with the font size
-halign = "center"        # start | center | end
-valign = "center"
-margin = 64
-line_align = "left"      # left | center | right
-timeout_ms = 5000
-reveal = { kind = "typewriter", cps = 28, cursor = true }
-vanish = { kind = "collapse", ms = 420 }
-sound = { enabled = true, freq = 2100.0, decay_ms = 38.0, gain = 0.22, every = 1 }
-.fi
-.RE
-.PP
-.B reveal
-is either
-.B { kind = "instant" }
-or
-.BR "{ kind = \(dqtypewriter\(dq, cps = N, cursor = BOOL }" .
-.B vanish
-takes the same kinds as
-.BR \-\-vanish ,
-with
-.B wash
-carrying an extra
-.B dir
-of
-.B down
-or
-.BR up .
+Every key, its type and its default are documented in
+.BR wayhud (5).
 .SH SOUND
 The typewriter blip is synthesised at run time rather than loaded from a
 file, so the program carries no assets. The knobs match those of
@@ -257,6 +228,7 @@ The message was shown and its lifetime ran out.
 Bad arguments, unreadable or invalid config, no matching output, or no
 display.
 .SH SEE ALSO
+.BR wayhud (5),
 .BR sway (1),
 .BR swaymsg (1),
 .BR pango-markup (7)

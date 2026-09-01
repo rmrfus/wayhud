@@ -19,6 +19,11 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use serde::Deserialize;
 
+/// One hour. Long enough for anything a heads-up message is for, short enough
+/// that a typo cannot strand the overlay on screen — there is no way to
+/// dismiss one early. Applies to the config as well as to `--timeout`.
+pub const MAX_TIMEOUT_MS: u64 = 3_600_000;
+
 /// Where a block of text sits along one axis. Maps onto layer-shell anchors:
 /// `Center` means "anchor neither edge", which the compositor centres for us.
 #[derive(Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
@@ -189,6 +194,28 @@ impl Default for Style {
     }
 }
 
+impl Style {
+    /// Range checks that serde cannot express. Runs on the preset actually
+    /// selected, so an unused broken preset elsewhere in the file is not a
+    /// reason to refuse to show a message.
+    fn validate(&self) -> Result<()> {
+        anyhow::ensure!(
+            self.timeout_ms <= MAX_TIMEOUT_MS,
+            "timeout_ms is {} but the maximum is {MAX_TIMEOUT_MS}",
+            self.timeout_ms
+        );
+        if let Some(w) = self.outline_width {
+            anyhow::ensure!(w >= 0.0, "outline_width must not be negative, got {w}");
+        }
+        anyhow::ensure!(
+            self.sound.every >= 1,
+            "sound.every must be at least 1, got {}",
+            self.sound.every
+        );
+        Ok(())
+    }
+}
+
 #[derive(Deserialize, Default, Debug)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
@@ -215,11 +242,15 @@ impl Config {
     /// Look up a preset. An unknown name is an error, not a silent default:
     /// `--style alret` should say so rather than render the wrong thing.
     pub fn style(&self, name: &str) -> Result<Style> {
-        match self.style.get(name) {
-            Some(s) => Ok(s.clone()),
-            None if name == "default" => Ok(Style::default()),
+        let style = match self.style.get(name) {
+            Some(s) => s.clone(),
+            None if name == "default" => Style::default(),
             None => anyhow::bail!("no [style.{name}] in the config"),
-        }
+        };
+        style
+            .validate()
+            .with_context(|| format!("in [style.{name}]"))?;
+        Ok(style)
     }
 }
 
@@ -286,6 +317,32 @@ mod tests {
         let s = c.style("a").unwrap();
         assert!(matches!(s.reveal, Reveal::Instant));
         assert!(matches!(s.vanish, Vanish::Fade { ms: 100 }));
+    }
+
+    #[test]
+    fn config_cannot_smuggle_an_absurd_timeout_past_the_cli_check() {
+        // --timeout is bounded in main; without this the same value simply
+        // moves into the file and pins the overlay to the screen for a year.
+        let c: Config = toml::from_str("[style.a]\ntimeout_ms = 31536000000\n").unwrap();
+        assert!(c.style("a").is_err());
+        let c: Config = toml::from_str("[style.a]\ntimeout_ms = 3600000\n").unwrap();
+        assert!(c.style("a").is_ok());
+    }
+
+    #[test]
+    fn config_range_checks_cover_width_and_sound() {
+        let c: Config = toml::from_str("[style.a]\noutline_width = -1.0\n").unwrap();
+        assert!(c.style("a").is_err());
+        let c: Config = toml::from_str("[style.a]\nsound = { every = 0 }\n").unwrap();
+        assert!(c.style("a").is_err());
+    }
+
+    #[test]
+    fn a_broken_preset_does_not_poison_the_one_being_used() {
+        let c: Config =
+            toml::from_str("[style.bad]\ntimeout_ms = 99999999999\n[style.good]\n").unwrap();
+        assert!(c.style("good").is_ok());
+        assert!(c.style("bad").is_err());
     }
 
     #[test]

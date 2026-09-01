@@ -1,5 +1,7 @@
 # Copy to $XDG_CONFIG_HOME/wayhud/config.toml.
 #
+# Every key with its type, default and range: man 5 wayhud
+#
 # Presets do NOT inherit from each other: any field left out falls back to the
 # compiled-in default, not to [style.default]. Unknown keys are an error, so a
 # typo tells you instead of quietly doing nothing.

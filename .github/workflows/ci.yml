@@ -33,8 +33,10 @@ jobs:
       - name: Test
         run: nix develop --command cargo test --locked
 
-      - name: Man page
-        run: nix develop --command groff -man -Tutf8 -ww -z man/man1/wayhud.1
+      - name: Man pages
+        run: |
+          nix develop --command groff -man -Tutf8 -ww -z man/man1/wayhud.1
+          nix develop --command groff -man -Tutf8 -ww -z man/man5/wayhud.5
 
       - name: Package
         run: nix build
