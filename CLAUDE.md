@@ -36,8 +36,12 @@ Install the hook once per clone: `git config core.hooksPath hooks`.
 - **Size the window from the full text, never the partially revealed text.**
   Sizing it per frame makes the window grow under the typewriter and drag the
   message across the screen.
-- **Clamp the pango layout width to the monitor.** The surface is sized from
-  the text, so an unclamped long line is silently clipped at both screen edges.
+- **Clamp the pango layout width to the monitor, then shrink it back to the
+  measured text.** The surface is sized from the text, so an unclamped long
+  line is silently clipped at both screen edges — but leaving the width at the
+  wrapping budget breaks alignment: pango positions lines for a non-left
+  `line_align` inside the layout width, so a centred line lands hundreds of
+  pixels outside a surface sized to the text and nothing renders at all.
 - **Everything on screen is in logical pixels.** Every output here runs at
   `scale = 2`; mixing in device pixels looks right on exactly one monitor.
 - **The outline width scales with the font unless the config pins it.** cairo

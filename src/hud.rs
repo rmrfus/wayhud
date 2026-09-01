@@ -80,12 +80,7 @@ impl Hud {
             LineAlign::Center => pango::Alignment::Center,
             LineAlign::Right => pango::Alignment::Right,
         });
-        if max_width > 0 {
-            layout.set_width(max_width * pango::SCALE);
-            // WordChar, not Word: a single unbroken token longer than the
-            // screen (a path, a hash) has to break somewhere.
-            layout.set_wrap(pango::WrapMode::WordChar);
-        }
+        fit_width(&layout, max_width);
         layout
     }
 }
@@ -114,6 +109,30 @@ fn outline_width(font: &pango::FontDescription, configured: Option<f64>) -> f64 
         size as f64 / pango::SCALE as f64
     };
     (points / 14.0).max(0.5)
+}
+
+/// Wrap the layout to `max_width`, then shrink its width to what the text
+/// actually occupies.
+///
+/// The second step is not cosmetic. Pango positions lines for a non-left
+/// alignment inside the layout's width, and that width is the wrapping budget
+/// — most of the screen — while the window is sized to the text. Leave it and
+/// a centred line is drawn hundreds of pixels outside the surface, i.e.
+/// nothing appears at all. Re-setting the width to the measured text keeps the
+/// line breaks (every line already fits) and makes alignment relative to the
+/// block, which is what it has to mean here.
+fn fit_width(layout: &pango::Layout, max_width: i32) {
+    if max_width <= 0 {
+        return;
+    }
+    layout.set_width(max_width * pango::SCALE);
+    // WordChar, not Word: a single unbroken token longer than the screen
+    // (a path, a hash) has to break somewhere.
+    layout.set_wrap(pango::WrapMode::WordChar);
+    let (text_width, _) = layout.pixel_size();
+    if text_width > 0 {
+        layout.set_width(text_width * pango::SCALE);
+    }
 }
 
 /// Frame state shared between the tick callback and the draw callback.
@@ -577,6 +596,53 @@ mod tests {
     fn negative_configured_width_is_clamped_not_passed_to_cairo() {
         let w = outline_width(&pango::FontDescription::from_string("Sans 20"), Some(-3.0));
         assert_eq!(w, 0.0);
+    }
+
+    /// A layout built straight from pangocairo, with no GTK widget and no
+    /// gtk::init — enough to exercise the geometry.
+    fn bare_layout(text: &str, font: &str) -> pango::Layout {
+        let ctx = pangocairo::FontMap::default().create_context();
+        let layout = pango::Layout::new(&ctx);
+        layout.set_font_description(Some(&pango::FontDescription::from_string(font)));
+        layout.set_text(text);
+        layout
+    }
+
+    #[test]
+    fn alignment_does_not_push_the_text_out_of_the_window() {
+        // The bug: alignment placed lines inside the wrapping budget (most of
+        // the screen) while the window was sized to the text, so anything but
+        // Left was drawn entirely outside the surface — a blank screen.
+        for align in [
+            pango::Alignment::Left,
+            pango::Alignment::Center,
+            pango::Alignment::Right,
+        ] {
+            let layout = bare_layout("REPRO", "Sans 36");
+            layout.set_alignment(align);
+            fit_width(&layout, 1354);
+            let (text_width, _) = layout.pixel_size();
+            let first_x = layout.index_to_pos(0).x() / pango::SCALE;
+            assert!(
+                first_x < text_width,
+                "{align:?}: first glyph at {first_x} is outside a {text_width}px window"
+            );
+        }
+    }
+
+    #[test]
+    fn a_line_too_long_for_the_budget_still_wraps() {
+        // Shrinking the width must not undo the wrapping it was set for.
+        let long = "wraps ".repeat(80);
+        let layout = bare_layout(&long, "Sans 36");
+        layout.set_alignment(pango::Alignment::Center);
+        fit_width(&layout, 600);
+        assert!(layout.line_count() > 1, "text did not wrap");
+        let (text_width, _) = layout.pixel_size();
+        assert!(
+            text_width <= 600,
+            "wrapped width {text_width} exceeds the budget"
+        );
     }
 
     #[test]
