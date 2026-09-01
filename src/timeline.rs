@@ -27,6 +27,8 @@ pub struct Timeline {
     vanish_ms: f64,
     /// Characters per second, kept for sound onsets. 0.0 when instant.
     cps: f64,
+    /// Untype erases character by character, so it gets blips of its own.
+    untype: bool,
 }
 
 impl Timeline {
@@ -39,16 +41,13 @@ impl Timeline {
             Reveal::Typewriter { cps, .. } if *cps <= 0.0 => (0.0, 0.0),
             Reveal::Typewriter { cps, .. } => (chars as f64 / cps * 1000.0, *cps),
         };
-        let vanish_ms = match vanish {
-            Vanish::Instant => 0.0,
-            Vanish::Fade { ms } | Vanish::Collapse { ms } => *ms as f64,
-        };
         Timeline {
             chars,
             reveal_ms,
             hold_ms: timeout_ms as f64,
-            vanish_ms,
+            vanish_ms: vanish.ms() as f64,
             cps,
+            untype: vanish.is_untype(),
         }
     }
 
@@ -88,6 +87,23 @@ impl Timeline {
             .filter(|(i, c)| !c.is_whitespace() && i.is_multiple_of(every))
             // Char i is fully revealed at the END of its slot.
             .map(|(i, _)| (i + 1) as f64 * step)
+            .collect()
+    }
+
+    /// Blips for an untype vanish, in seconds from t0. Empty for every other
+    /// mode — nothing is being struck, so nothing should click.
+    pub fn vanish_onsets(&self, text: &str, every: usize) -> Vec<f64> {
+        if !self.untype || self.vanish_ms <= 0.0 || self.chars == 0 {
+            return Vec::new();
+        }
+        let every = every.max(1);
+        let base = (self.reveal_ms + self.hold_ms) / 1000.0;
+        let step = self.vanish_ms / self.chars as f64 / 1000.0;
+        text.chars()
+            .enumerate()
+            .filter(|(i, c)| !c.is_whitespace() && i.is_multiple_of(every))
+            // Erased from the end: the last character goes first.
+            .map(|(i, _)| base + (self.chars - i) as f64 * step)
             .collect()
     }
 
@@ -154,6 +170,40 @@ mod tests {
         assert!((all[3] - 0.5).abs() < 1e-9);
         // every=2 keeps indices 0,2,4 -> minus the space at 2 -> 0 and 4.
         assert_eq!(tl.onsets("ab cd", 2).len(), 2);
+    }
+
+    #[test]
+    fn untype_blips_run_backwards_after_the_hold() {
+        let tl = Timeline::new("abcd", &tw(10.0), 1000, &Vanish::Untype { ms: 400 });
+        // reveal 400 ms + hold 1000 ms = 1.4 s before the first erase blip.
+        let on = tl.vanish_onsets("abcd", 1);
+        assert_eq!(on.len(), 4);
+        // Char 3 (the last) is erased first, char 0 last.
+        assert!(on[3] < on[0], "erase order must be reversed: {on:?}");
+        assert!(
+            on.iter().all(|&t| t >= 1.4),
+            "blip before the hold ended: {on:?}"
+        );
+    }
+
+    #[test]
+    fn only_untype_gets_vanish_blips() {
+        for v in [
+            Vanish::Fade { ms: 400 },
+            Vanish::Collapse { ms: 400 },
+            Vanish::Wash {
+                ms: 400,
+                dir: crate::config::Dir::Up,
+            },
+            Vanish::Dissolve { ms: 400 },
+            Vanish::Instant,
+        ] {
+            let tl = Timeline::new("abcd", &tw(10.0), 100, &v);
+            assert!(
+                tl.vanish_onsets("abcd", 1).is_empty(),
+                "{v:?} should be silent"
+            );
+        }
     }
 
     #[test]

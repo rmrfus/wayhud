@@ -34,6 +34,7 @@ cargo build --release
 | `--outline`      | —         | Outline colour, or `none` for flat glyphs                 |
 | `--position`     | —         | `center`, `top`, `bottom-right`, …                        |
 | `--typewriter`   | —         | Characters/second; `0` reveals instantly                  |
+| `--vanish`       | —         | Exit effect, optionally `:MS` — see below                 |
 | `--no-sound`     | —         | Stay quiet regardless of the style                        |
 | `--raw`          | —         | Take the argument literally (no `\n` / `\t` expansion)    |
 | `--config`       | XDG path  | Config file location                                      |
@@ -44,6 +45,26 @@ cargo build --release
 `--output current` asks sway over its IPC socket which output has focus —
 Wayland itself has no way to tell a client that. Without `SWAYSOCK` it fails
 rather than guessing.
+
+## Vanish effects
+
+`--vanish <kind>[:<ms>]`, or `vanish = { kind = "...", ms = ... }` in a preset.
+Without `:MS` the flag keeps whatever duration the preset already had, so you
+can flip through effects without re-stating the timing.
+
+| Kind          | What it looks like                                                      |
+| ------------- | ----------------------------------------------------------------------- |
+| `instant`     | Gone on the frame the hold expires.                                      |
+| `fade`        | Alpha to zero. The quiet one.                                            |
+| `collapse`    | CRT power-off: squashes to a bright line, blooms wider, blinks out.      |
+| `wash-down`   | A soft edge sweeps top to bottom, erasing as it passes.                  |
+| `wash-up`     | The same, bottom to top.                                                 |
+| `untype`      | The caret walks back and eats the text, blipping on the way out.         |
+| `dissolve`    | Falls apart into blocks in a fixed pseudo-random order.                  |
+
+`untype` is the only one that makes noise — it is typing, so it clicks. It also
+gets a caret even after an instant reveal, since otherwise characters would
+disappear with nothing touching them.
 
 ## Config
 
@@ -59,7 +80,7 @@ color = "#b8bb26"
 [style.alert]
 color = "#fb4934"
 reveal = { kind = "typewriter", cps = 45, cursor = true }
-vanish = { kind = "collapse", ms = 300 }
+vanish = { kind = "wash-up", ms = 300 }
 ```
 
 ## sway

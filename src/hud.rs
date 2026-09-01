@@ -15,7 +15,7 @@ use gtk::pango;
 use gtk::prelude::*;
 use gtk_layer_shell::{Edge, KeyboardMode, LayerShell};
 
-use crate::config::{Align, LineAlign, Reveal, Style, Vanish};
+use crate::config::{Align, Dir, LineAlign, Reveal, Style, Vanish};
 use crate::timeline::{Phase, Timeline};
 
 /// A message with everything already parsed and validated, so nothing can fail
@@ -172,7 +172,7 @@ pub fn present(
             }
             let t_ms = (now - t0) as f64 / 1000.0;
             let phase = hud.timeline.phase_at(t_ms);
-            let blink = show_caret(&hud.style.reveal, phase, t_ms);
+            let blink = show_caret(&hud.style.reveal, &hud.style.vanish, phase, t_ms);
             let changed = phase != frame.phase.get() || blink != frame.blink.get();
             frame.phase.set(phase);
             frame.t_ms.set(t_ms);
@@ -247,7 +247,7 @@ fn draw(
     t_ms: f64,
 ) {
     let total = hud.timeline.chars();
-    let (visible, vanish_p) = match phase {
+    let (mut visible, vanish_p) = match phase {
         Phase::Reveal { chars } => (chars, 0.0),
         Phase::Hold => (total, 0.0),
         Phase::Vanish { p } => (total, p),
@@ -255,13 +255,20 @@ fn draw(
     };
 
     let layout = hud.layout_for(area, max_width);
-    let (_, th) = layout.pixel_size();
+    let (tw, th) = layout.pixel_size();
+    let (tw, th) = (tw as f64, th as f64);
     let pad = hud.pad();
+
+    // Untype isn't a paint effect: it runs the reveal backwards, so it edits
+    // the visible-character count and everything downstream just follows.
+    if vanish_p > 0.0 && hud.style.vanish.is_untype() {
+        visible = ((1.0 - vanish_p) * total as f64).ceil() as usize;
+    }
 
     let _ = cr.save();
     cr.translate(pad, pad);
 
-    // Vanish transform + alpha.
+    // Effects that change geometry or colour, applied before painting.
     let mut alpha = 1.0_f64;
     let mut whiten = 0.0_f64;
     if vanish_p > 0.0 {
@@ -272,7 +279,7 @@ fn draw(
                 // wider, wash to white, then blink out over the last 15%.
                 let sy = (1.0 - vanish_p).powf(1.8).max(0.002);
                 let sx = 1.0 + 0.06 * vanish_p;
-                let mid = th as f64 / 2.0;
+                let mid = th / 2.0;
                 cr.translate(0.0, mid);
                 cr.scale(sx, sy);
                 cr.translate(0.0, -mid);
@@ -283,29 +290,73 @@ fn draw(
                     (1.0 - vanish_p) / 0.15
                 };
             }
-            Vanish::Instant => {}
+            Vanish::Instant | Vanish::Untype { .. } => {}
+            // Handled after painting, as a mask.
+            Vanish::Wash { .. } | Vanish::Dissolve { .. } => {}
         }
     }
 
-    // Caret position doubles as the typewriter clip boundary.
-    let caret = caret_rect(&layout, &hud.text, visible);
+    // Mask effects need the finished glyphs as a source, so they paint into a
+    // group first. Doing it the other way round would mask the stroke and the
+    // fill separately and leave the outline behind.
+    let masked = vanish_p > 0.0
+        && matches!(
+            hud.style.vanish,
+            Vanish::Wash { .. } | Vanish::Dissolve { .. }
+        );
+    if masked {
+        cr.push_group();
+    }
 
+    paint_text(cr, &layout, hud, visible, total, alpha, whiten, pad);
+    if show_caret(&hud.style.reveal, &hud.style.vanish, phase, t_ms) {
+        let caret = caret_rect(&layout, &hud.text, visible);
+        set_color(cr, hud.fill, alpha, whiten);
+        cr.rectangle(caret.x, caret.y, caret.w, caret.h);
+        let _ = cr.fill();
+    }
+
+    if masked {
+        let _ = cr.pop_group_to_source();
+        match hud.style.vanish {
+            Vanish::Wash { dir, .. } => {
+                let _ = cr.mask(wash_gradient(th, vanish_p, dir));
+            }
+            Vanish::Dissolve { .. } => {
+                if let Some(surface) = dissolve_mask(tw, th, pad, vanish_p) {
+                    let _ = cr.mask_surface(&surface, -pad, -pad);
+                }
+            }
+            _ => unreachable!("masked is only set for wash and dissolve"),
+        }
+    }
+
+    let _ = cr.restore();
+}
+
+/// Stroke + fill the glyphs, clipped to whatever has been typed so far.
+#[allow(clippy::too_many_arguments)]
+fn paint_text(
+    cr: &gtk::cairo::Context,
+    layout: &pango::Layout,
+    hud: &Hud,
+    visible: usize,
+    total: usize,
+    alpha: f64,
+    whiten: f64,
+    pad: f64,
+) {
     if visible < total {
-        let Caret {
-            x: cx,
-            y: cy,
-            h: ch,
-            ..
-        } = caret;
+        let caret = caret_rect(layout, &hud.text, visible);
         let (w, _) = layout.pixel_size();
         // Everything above the caret's line, plus the typed part of that line.
-        cr.rectangle(-pad, -pad, w as f64 + pad * 2.0, cy + pad);
-        cr.rectangle(-pad, cy, cx + pad, ch);
+        cr.rectangle(-pad, -pad, w as f64 + pad * 2.0, caret.y + pad);
+        cr.rectangle(-pad, caret.y, caret.x + pad, caret.h);
         cr.clip();
     }
 
     cr.move_to(0.0, 0.0);
-    pangocairo::functions::layout_path(cr, &layout);
+    pangocairo::functions::layout_path(cr, layout);
     if let Some(o) = hud.outline {
         set_color(cr, o, alpha, whiten);
         cr.set_line_width(hud.style.outline_width);
@@ -316,14 +367,67 @@ fn draw(
     let _ = cr.fill();
 
     cr.reset_clip();
+}
 
-    if show_caret(&hud.style.reveal, phase, t_ms) {
-        set_color(cr, hud.fill, alpha, whiten);
-        cr.rectangle(caret.x, caret.y, caret.w, caret.h);
-        let _ = cr.fill();
+/// A soft edge sweeping through the text. The gradient is padded on both
+/// sides so the sweep starts fully off the text and ends fully past it.
+fn wash_gradient(th: f64, p: f64, dir: Dir) -> gtk::cairo::LinearGradient {
+    let soft = (th * 0.35).max(8.0);
+    let span = th + soft * 2.0;
+    match dir {
+        Dir::Down => {
+            let front = -soft + p * span;
+            let g = gtk::cairo::LinearGradient::new(0.0, front, 0.0, front + soft);
+            g.add_color_stop_rgba(0.0, 1.0, 1.0, 1.0, 0.0);
+            g.add_color_stop_rgba(1.0, 1.0, 1.0, 1.0, 1.0);
+            g
+        }
+        Dir::Up => {
+            let front = th + soft - p * span;
+            let g = gtk::cairo::LinearGradient::new(0.0, front - soft, 0.0, front);
+            g.add_color_stop_rgba(0.0, 1.0, 1.0, 1.0, 1.0);
+            g.add_color_stop_rgba(1.0, 1.0, 1.0, 1.0, 0.0);
+            g
+        }
     }
+}
 
-    let _ = cr.restore();
+/// An A8 mask of surviving blocks. Each block has a fixed pseudo-random
+/// lifetime, so the decay pattern is stable frame to frame instead of
+/// re-randomising into static.
+fn dissolve_mask(tw: f64, th: f64, pad: f64, p: f64) -> Option<gtk::cairo::ImageSurface> {
+    let w = (tw + pad * 2.0).ceil() as i32;
+    let h = (th + pad * 2.0).ceil() as i32;
+    if w <= 0 || h <= 0 {
+        return None;
+    }
+    let block = (th / 9.0).clamp(6.0, 40.0);
+    let surface = gtk::cairo::ImageSurface::create(gtk::cairo::Format::A8, w, h).ok()?;
+    {
+        let mcr = gtk::cairo::Context::new(&surface).ok()?;
+        // Colour is ignored in A8; only the alpha channel survives.
+        mcr.set_source_rgba(1.0, 1.0, 1.0, 1.0);
+        let cols = (w as f64 / block).ceil() as i32;
+        let rows = (h as f64 / block).ceil() as i32;
+        for by in 0..rows {
+            for bx in 0..cols {
+                if block_life(bx, by) >= p {
+                    mcr.rectangle(bx as f64 * block, by as f64 * block, block, block);
+                }
+            }
+        }
+        let _ = mcr.fill();
+    }
+    Some(surface)
+}
+
+/// Deterministic 0.0..1.0 per block position.
+fn block_life(bx: i32, by: i32) -> f64 {
+    let mut h = (bx as u32).wrapping_mul(73_856_093) ^ (by as u32).wrapping_mul(19_349_663);
+    h ^= h >> 13;
+    h = h.wrapping_mul(0x5bd1_e995);
+    h ^= h >> 15;
+    (h % 10_000) as f64 / 10_000.0
 }
 
 /// Caret box in widget pixels.
@@ -361,16 +465,21 @@ fn caret_rect(layout: &pango::Layout, text: &str, visible_chars: usize) -> Caret
     }
 }
 
-fn show_caret(reveal: &Reveal, phase: Phase, t_ms: f64) -> bool {
-    let Reveal::Typewriter { cursor: true, .. } = reveal else {
+fn show_caret(reveal: &Reveal, vanish: &Vanish, phase: Phase, t_ms: f64) -> bool {
+    // An explicit `cursor = false` wins everywhere.
+    if matches!(reveal, Reveal::Typewriter { cursor: false, .. }) {
         return false;
-    };
+    }
+    let typing = matches!(reveal, Reveal::Typewriter { .. });
     match phase {
-        Phase::Reveal { .. } => true,
+        Phase::Reveal { .. } => typing,
         // Keep blinking while the text is up: a terminal that stops blinking
         // reads as a hung terminal.
-        Phase::Hold => ((t_ms / 530.0) as u64).is_multiple_of(2),
-        _ => false,
+        Phase::Hold => typing && ((t_ms / 530.0) as u64).is_multiple_of(2),
+        // Untype IS the caret eating the text, so it gets one even when the
+        // text arrived instantly — otherwise characters vanish untouched.
+        Phase::Vanish { .. } => vanish.is_untype(),
+        Phase::Done => false,
     }
 }
 
@@ -382,4 +491,65 @@ fn set_color(cr: &gtk::cairo::Context, c: gdk::RGBA, alpha: f64, whiten: f64) {
         mix(c.blue()),
         c.alpha() as f64 * alpha,
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const TW: Reveal = Reveal::Typewriter {
+        cps: 20.0,
+        cursor: true,
+    };
+    const NO_CURSOR: Reveal = Reveal::Typewriter {
+        cps: 20.0,
+        cursor: false,
+    };
+    const UNTYPE: Vanish = Vanish::Untype { ms: 300 };
+    const FADE: Vanish = Vanish::Fade { ms: 300 };
+
+    #[test]
+    fn untype_gets_a_caret_even_after_an_instant_reveal() {
+        let v = Phase::Vanish { p: 0.5 };
+        assert!(show_caret(&Reveal::Instant, &UNTYPE, v, 0.0));
+        // ...but an instant reveal has nothing to type, so no caret before it.
+        assert!(!show_caret(&Reveal::Instant, &UNTYPE, Phase::Hold, 0.0));
+    }
+
+    #[test]
+    fn other_vanishes_drop_the_caret() {
+        assert!(!show_caret(&TW, &FADE, Phase::Vanish { p: 0.5 }, 0.0));
+        assert!(!show_caret(&TW, &UNTYPE, Phase::Done, 0.0));
+    }
+
+    #[test]
+    fn cursor_false_disables_it_everywhere() {
+        for phase in [
+            Phase::Reveal { chars: 1 },
+            Phase::Hold,
+            Phase::Vanish { p: 0.5 },
+        ] {
+            assert!(!show_caret(&NO_CURSOR, &UNTYPE, phase, 0.0));
+        }
+    }
+
+    #[test]
+    fn hold_blinks_rather_than_staying_lit() {
+        assert!(show_caret(&TW, &FADE, Phase::Hold, 0.0));
+        assert!(!show_caret(&TW, &FADE, Phase::Hold, 600.0));
+        assert!(show_caret(&TW, &FADE, Phase::Hold, 1100.0));
+    }
+
+    #[test]
+    fn dissolve_blocks_are_stable_and_in_range() {
+        // Same block must always report the same lifetime, or the decay
+        // re-randomises every frame and reads as static instead of a dissolve.
+        for (x, y) in [(0, 0), (3, 7), (41, 2)] {
+            let a = block_life(x, y);
+            assert_eq!(a, block_life(x, y));
+            assert!((0.0..1.0).contains(&a), "{a} out of range");
+        }
+        // Neighbours must not decay together, or it looks like a wipe.
+        assert_ne!(block_life(5, 5), block_life(6, 5));
+    }
 }

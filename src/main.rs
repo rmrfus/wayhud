@@ -22,7 +22,7 @@ use clap::Parser;
 use gtk::gio;
 use gtk::prelude::*;
 
-use config::{Align, Config, Reveal, Style};
+use config::{Align, Config, Dir, Reveal, Style, Vanish};
 use hud::Hud;
 use outputs::OutputSpec;
 
@@ -68,6 +68,11 @@ struct Cli {
     #[arg(long)]
     typewriter: Option<f64>,
 
+    /// How the text goes away: instant, fade, collapse, wash-down, wash-up,
+    /// untype, dissolve. Append ":MS" to set the duration, e.g. "wash-up:700".
+    #[arg(long)]
+    vanish: Option<String>,
+
     /// Stay quiet even if the style asks for blips.
     #[arg(long)]
     no_sound: bool,
@@ -105,7 +110,9 @@ fn run() -> Result<ExitCode> {
     // Render the whole blip track before the GUI exists: it depends only on
     // the text and the typing speed, and doing it here keeps the first frame
     // from stalling on synthesis.
-    let onsets = hud.timeline.onsets(&hud.text, hud.style.sound.every);
+    let mut onsets = hud.timeline.onsets(&hud.text, hud.style.sound.every);
+    // Untype clicks its way back out; every other vanish is silent.
+    onsets.extend(hud.timeline.vanish_onsets(&hud.text, hud.style.sound.every));
     let pcm = RefCell::new(Some(sound::typewriter_track(&hud.style.sound, &onsets)));
     // take() makes this fire exactly once no matter how many windows call it.
     let on_first_frame: Rc<dyn Fn()> = Rc::new(move || {
@@ -258,6 +265,11 @@ fn apply_overrides(style: &mut Style, cli: &Cli) -> Result<()> {
             Reveal::Typewriter { cps, cursor }
         };
     }
+    if let Some(v) = &cli.vanish {
+        // Carry the configured duration over when the flag doesn't state one,
+        // so switching effect on the CLI doesn't silently reset the timing.
+        style.vanish = parse_vanish(v, style.vanish.ms())?;
+    }
     if cli.no_sound {
         style.sound.enabled = false;
     }
@@ -267,6 +279,31 @@ fn apply_overrides(style: &mut Style, cli: &Cli) -> Result<()> {
         style.valign = v;
     }
     Ok(())
+}
+
+/// `wash-up`, `fade:250`, `collapse`, …
+fn parse_vanish(spec: &str, fallback_ms: u64) -> Result<Vanish> {
+    let (kind, ms) = match spec.split_once(':') {
+        Some((k, m)) => (
+            k,
+            m.parse::<u64>()
+                .with_context(|| format!("bad duration {m:?} in --vanish"))?,
+        ),
+        None => (spec, fallback_ms.max(1)),
+    };
+    Ok(match kind {
+        "instant" | "none" => Vanish::Instant,
+        "fade" => Vanish::Fade { ms },
+        "collapse" | "crt" => Vanish::Collapse { ms },
+        "wash" | "wash-down" => Vanish::Wash { ms, dir: Dir::Down },
+        "wash-up" => Vanish::Wash { ms, dir: Dir::Up },
+        "untype" => Vanish::Untype { ms },
+        "dissolve" => Vanish::Dissolve { ms },
+        other => anyhow::bail!(
+            "unknown --vanish {other:?} (want instant, fade, collapse, \
+             wash-down, wash-up, untype or dissolve)"
+        ),
+    })
 }
 
 /// `top-left`, `bottom`, `center`, … in either order.
@@ -332,6 +369,44 @@ mod tests {
             }
             _ => panic!("expected typewriter"),
         }
+    }
+
+    #[test]
+    fn vanish_flag_keeps_the_configured_duration() {
+        let mut s = Style {
+            vanish: Vanish::Fade { ms: 900 },
+            ..Style::default()
+        };
+        let cli = Cli::parse_from(["wayhud", "x", "--vanish", "wash-up"]);
+        apply_overrides(&mut s, &cli).unwrap();
+        assert_eq!(
+            s.vanish,
+            Vanish::Wash {
+                ms: 900,
+                dir: Dir::Up
+            }
+        );
+    }
+
+    #[test]
+    fn vanish_flag_can_state_its_own_duration() {
+        let mut s = Style::default();
+        let cli = Cli::parse_from(["wayhud", "x", "--vanish", "dissolve:250"]);
+        apply_overrides(&mut s, &cli).unwrap();
+        assert_eq!(s.vanish, Vanish::Dissolve { ms: 250 });
+    }
+
+    #[test]
+    fn unknown_vanish_is_rejected_not_ignored() {
+        assert!(parse_vanish("sparkle", 400).is_err());
+        assert!(parse_vanish("fade:abc", 400).is_err());
+    }
+
+    #[test]
+    fn instant_vanish_survives_the_fallback_clamp() {
+        // fallback_ms.max(1) must not turn an explicit "instant" into a 1 ms
+        // animation with a duration nobody asked for.
+        assert_eq!(parse_vanish("instant", 0).unwrap(), Vanish::Instant);
     }
 
     #[test]

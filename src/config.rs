@@ -55,8 +55,16 @@ pub enum Reveal {
     },
 }
 
+/// Which way a directional effect travels.
+#[derive(Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum Dir {
+    Down,
+    Up,
+}
+
 /// How the text goes away.
-#[derive(Deserialize, Clone, Debug)]
+#[derive(Deserialize, Clone, Copy, Debug, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Vanish {
     /// Disappear on the frame the hold expires.
@@ -71,6 +79,42 @@ pub enum Vanish {
         #[serde(default = "d_vanish_ms")]
         ms: u64,
     },
+    /// A soft edge sweeps through the text and erases it as it passes.
+    Wash {
+        #[serde(default = "d_vanish_ms")]
+        ms: u64,
+        #[serde(default = "d_dir")]
+        dir: Dir,
+    },
+    /// Backspace it out: the caret walks back and eats the text, blipping.
+    Untype {
+        #[serde(default = "d_vanish_ms")]
+        ms: u64,
+    },
+    /// The text falls apart into blocks, in a fixed pseudo-random order.
+    Dissolve {
+        #[serde(default = "d_vanish_ms")]
+        ms: u64,
+    },
+}
+
+impl Vanish {
+    pub fn ms(&self) -> u64 {
+        match self {
+            Vanish::Instant => 0,
+            Vanish::Fade { ms }
+            | Vanish::Collapse { ms }
+            | Vanish::Wash { ms, .. }
+            | Vanish::Untype { ms }
+            | Vanish::Dissolve { ms } => *ms,
+        }
+    }
+
+    /// Untype reveals in reverse, so it drives the caret and the blip track
+    /// rather than being a pure paint effect like the others.
+    pub fn is_untype(&self) -> bool {
+        matches!(self, Vanish::Untype { .. })
+    }
 }
 
 /// Typewriter blip. Knob names match `blyamk`, so a sound dialled in there
@@ -193,6 +237,9 @@ fn d_true() -> bool {
 fn d_vanish_ms() -> u64 {
     420
 }
+fn d_dir() -> Dir {
+    Dir::Down
+}
 
 #[cfg(test)]
 mod tests {
@@ -237,5 +284,51 @@ mod tests {
         let s = c.style("a").unwrap();
         assert!(matches!(s.reveal, Reveal::Instant));
         assert!(matches!(s.vanish, Vanish::Fade { ms: 100 }));
+    }
+
+    #[test]
+    fn wash_carries_a_direction() {
+        let c: Config =
+            toml::from_str("[style.a]\nvanish = { kind = \"wash\", ms = 300, dir = \"up\" }\n")
+                .unwrap();
+        assert_eq!(
+            c.style("a").unwrap().vanish,
+            Vanish::Wash {
+                ms: 300,
+                dir: Dir::Up
+            }
+        );
+    }
+
+    #[test]
+    fn wash_direction_defaults_to_down() {
+        let c: Config = toml::from_str("[style.a]\nvanish = { kind = \"wash\" }\n").unwrap();
+        assert_eq!(
+            c.style("a").unwrap().vanish,
+            Vanish::Wash {
+                ms: 420,
+                dir: Dir::Down
+            }
+        );
+    }
+
+    #[test]
+    fn every_vanish_reports_its_duration() {
+        // ms() feeds the timeline; a variant missing from that match arm would
+        // silently animate for zero milliseconds.
+        for (toml_kind, want) in [
+            ("instant", 0),
+            ("fade", 420),
+            ("collapse", 420),
+            ("wash", 420),
+            ("untype", 420),
+            ("dissolve", 420),
+        ] {
+            let c: Config = toml::from_str(&format!(
+                "[style.a]\nvanish = {{ kind = \"{toml_kind}\" }}\n"
+            ))
+            .unwrap();
+            assert_eq!(c.style("a").unwrap().vanish.ms(), want, "{toml_kind}");
+        }
     }
 }

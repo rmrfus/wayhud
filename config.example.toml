@@ -15,6 +15,7 @@ margin = 64                 # only applies to an anchored (non-centre) axis
 line_align = "left"         # alignment of lines inside the block
 timeout_ms = 5000           # hold AFTER the reveal finishes
 reveal = { kind = "typewriter", cps = 28, cursor = true }
+# instant | fade | collapse | wash (dir = down|up) | untype | dissolve
 vanish = { kind = "collapse", ms = 420 }
 sound = { enabled = true, freq = 2100.0, decay_ms = 38.0, gain = 0.22, every = 1 }
 
@@ -29,3 +30,13 @@ vanish = { kind = "fade", ms = 250 }
 reveal = { kind = "instant" }
 vanish = { kind = "fade", ms = 200 }
 sound = { enabled = false }
+
+# Self-destructing message: types in, sits, then clicks its way back out.
+[style.spy]
+color = "#8ec07c"           # gruvbox bright aqua
+reveal = { kind = "typewriter", cps = 18, cursor = true }
+vanish = { kind = "untype", ms = 900 }
+
+[style.wipe]
+reveal = { kind = "instant" }
+vanish = { kind = "wash", ms = 600, dir = "up" }

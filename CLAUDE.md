@@ -36,5 +36,10 @@ Install the hook once per clone: `git config core.hooksPath hooks`.
   the text, so an unclamped long line is silently clipped at both screen edges.
 - **Everything on screen is in logical pixels.** Every output here runs at
   `scale = 2`; mixing in device pixels looks right on exactly one monitor.
+- **Mask effects paint into a `push_group` first.** Masking the stroke and the
+  fill as they are drawn erases them at different rates and leaves the outline
+  hanging in the air after the fill is gone.
+- **`block_life` must stay deterministic.** Re-rolling the dissolve pattern per
+  frame turns a decay into static.
 - **Redraw only when the frame actually changes.** A 60 fps cairo text-path
   repaint of a static string across three HiDPI outputs is pure heat.
