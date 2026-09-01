@@ -11,7 +11,7 @@ mod sound;
 mod synth;
 mod timeline;
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::io::{IsTerminal, Read};
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -19,8 +19,7 @@ use std::rc::Rc;
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use gtk::gio;
-use gtk::prelude::*;
+use gtk::glib;
 
 use config::{Align, Config, Dir, Reveal, Style, Vanish};
 use hud::Hud;
@@ -121,73 +120,44 @@ fn run() -> Result<ExitCode> {
         }
     });
 
-    // NON_UNIQUE: without it GTK's single-instance machinery would hand our
-    // arguments to an already-running wayhud over D-Bus instead of opening a
-    // second overlay, which is exactly the "show both" behaviour we want.
-    let app = gtk::Application::new(
-        Some("net.x123.wayhud"),
-        gio::ApplicationFlags::NON_UNIQUE | gio::ApplicationFlags::HANDLES_COMMAND_LINE,
-    );
+    gtk::init().context("initialising GTK")?;
+    load_css();
 
-    let failure = Rc::new(RefCell::new(None::<anyhow::Error>));
+    let display = gtk::gdk::Display::default().context("no display")?;
+    let monitors = outputs::resolve(&display, &spec)?;
 
-    app.connect_startup(|_| {
-        let provider = gtk::CssProvider::new();
-        // The overlay must not paint the theme's window background over the
-        // screen; only the glyphs are ours to draw.
-        provider.load_from_string("window.wayhud { background: transparent; }");
-        if let Some(display) = gtk::gdk::Display::default() {
-            gtk::style_context_add_provider_for_display(
-                &display,
-                &provider,
-                gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
-            );
-        }
-    });
-
-    // We parse argv ourselves with clap; this handler exists only to stop GIO
-    // from complaining about the arguments it was handed.
-    app.connect_command_line(|app, _| {
-        app.activate();
-        gtk::glib::ExitCode::SUCCESS
-    });
-
-    app.connect_activate({
-        let hud = hud.clone();
-        let failure = failure.clone();
-        let spec = spec.clone();
-        move |app| {
-            let display = match gtk::gdk::Display::default() {
-                Some(d) => d,
-                None => {
-                    *failure.borrow_mut() = Some(anyhow::anyhow!("no display"));
-                    return;
+    // Exit once the last overlay is gone. Counting windows rather than
+    // trusting a single timer keeps the loop honest if one output is slower.
+    let main_loop = glib::MainLoop::new(None, false);
+    let alive = Rc::new(Cell::new(monitors.len()));
+    for monitor in monitors {
+        hud::present(&monitor, hud.clone(), on_first_frame.clone(), {
+            let alive = alive.clone();
+            let main_loop = main_loop.clone();
+            move || {
+                alive.set(alive.get().saturating_sub(1));
+                if alive.get() == 0 {
+                    main_loop.quit();
                 }
-            };
-            match outputs::resolve(&display, &spec) {
-                Ok(monitors) => {
-                    for monitor in monitors {
-                        hud::present(app, &monitor, hud.clone(), on_first_frame.clone());
-                    }
-                }
-                Err(e) => *failure.borrow_mut() = Some(e),
             }
-        }
-    });
-
-    let code = app.run_with_args::<&str>(&[]);
-    if let Some(e) = failure.borrow_mut().take() {
-        return Err(e);
+        });
     }
-    Ok(if code == glib_exit_ok() {
-        ExitCode::SUCCESS
-    } else {
-        ExitCode::FAILURE
-    })
+    main_loop.run();
+    Ok(ExitCode::SUCCESS)
 }
 
-fn glib_exit_ok() -> gtk::glib::ExitCode {
-    gtk::glib::ExitCode::SUCCESS
+fn load_css() {
+    let provider = gtk::CssProvider::new();
+    // The overlay must not paint the theme's window background over the
+    // screen; only the glyphs are ours to draw.
+    provider.load_from_string("window.wayhud { background: transparent; }");
+    if let Some(display) = gtk::gdk::Display::default() {
+        gtk::style_context_add_provider_for_display(
+            &display,
+            &provider,
+            gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+        );
+    }
 }
 
 /// Text comes from argv, or from stdin when argv is empty or "-".

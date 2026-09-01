@@ -22,9 +22,13 @@ Install the hook once per clone: `git config core.hooksPath hooks`.
 
 - **The font family is `LythMono Nerd Font`, not `Lyth Mono`.** fontconfig
   falls back to DejaVu Sans on the latter without a word of warning.
-- **`Application` must keep `NON_UNIQUE`.** Otherwise GTK's single-instance
-  machinery forwards a second invocation's arguments to the running process
-  over D-Bus instead of opening a second overlay. Showing both is the spec.
+- **No `GtkApplication`.** It registers on the session bus and probes for the
+  `Inhibit` portal, which nothing provides under sway (`gtk.portal` declares it
+  but is `UseIn=gnome`; `wlr.portal` only does Screenshot/ScreenCast), so every
+  run printed a GDK warning. A plain `GtkWindow` plus a `glib::MainLoop` does
+  everything this tool needs, and showing two overlays for two invocations is
+  the spec — the single-instance behaviour was something we had to switch off
+  anyway.
 - **The layer namespace stays `"wayhud"`.** It is visible on the wire and
   people key sway rules off it; renaming it breaks their configs.
 - **The surface keeps an empty input region.** At `Layer::Overlay` the window

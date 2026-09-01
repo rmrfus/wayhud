@@ -100,13 +100,18 @@ struct Frame {
 /// `on_first_frame` fires exactly once across all windows, on whichever one
 /// draws first — that is where the audio starts, so sound and animation share
 /// a t0 instead of drifting apart by however long window setup took.
+/// `on_closed` fires when this window is done, so the caller can stop the main
+/// loop once the last one goes.
 pub fn present(
-    app: &gtk::Application,
     monitor: &gdk::Monitor,
     hud: Rc<Hud>,
     on_first_frame: Rc<dyn Fn()>,
+    on_closed: impl Fn() + 'static,
 ) {
-    let window = gtk::ApplicationWindow::new(app);
+    // A plain GtkWindow, not a GtkApplicationWindow: GtkApplication would
+    // register on the session bus and go looking for the Inhibit portal, which
+    // no backend provides under sway. We need none of what it offers.
+    let window = gtk::Window::new();
     window.add_css_class("wayhud");
 
     window.init_layer_shell();
@@ -189,6 +194,11 @@ pub fn present(
         }
     });
 
+    window.connect_close_request(move |_| {
+        on_closed();
+        glib::Propagation::Proceed
+    });
+
     window.present();
 
     // Click-through. Without an empty input region the overlay eats pointer
@@ -199,7 +209,7 @@ pub fn present(
     }
 }
 
-fn apply_anchors(window: &gtk::ApplicationWindow, style: &Style) {
+fn apply_anchors(window: &gtk::Window, style: &Style) {
     // Anchoring neither edge of an axis is what makes the compositor centre
     // the surface on it, so Center deliberately sets nothing.
     match style.halign {
