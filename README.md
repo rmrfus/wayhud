@@ -75,6 +75,7 @@ file format.
 | `--outline`      | —         | Outline colour, or `none` for flat glyphs                 |
 | `--position`     | —         | `center`, `top`, `bottom-right`, …                        |
 | `--typewriter`   | —         | Characters/second; `0` reveals instantly                  |
+| `--jitter`       | —         | Stagger keystroke gaps by ±this fraction (0–1)             |
 | `--vanish`       | —         | Exit effect, optionally `:MS` — see below                 |
 | `--no-sound`     | —         | Stay quiet regardless of the style                        |
 | `--raw`          | —         | Take the argument literally (no `\n` / `\t` expansion)    |
@@ -156,7 +157,10 @@ vanish = { kind = "wash", ms = 300, dir = "up" }
 | `sound`         | table                         | on, 2100 Hz, gain 0.22       | The typewriter blip                                       |
 
 `reveal` is `{ kind = "instant" }` or
-`{ kind = "typewriter", cps = F, cursor = BOOL }`.
+`{ kind = "typewriter", cps = F, cursor = BOOL, jitter = F }`. `jitter` (0–1,
+default 0) staggers each keystroke gap by up to that fraction either way, so
+the typing stops sounding like a metronome; the blips use the same moments as
+the glyphs, so they cannot drift apart.
 
 `vanish` takes the kinds listed above plus `ms`; `wash` carries an extra
 `dir` of `down` or `up`.

@@ -109,6 +109,13 @@ Reveal speed in characters per second.
 .B 0
 reveals the whole message instantly.
 .TP
+.BR \-\-jitter " \fIF\fR"
+Randomise each keystroke gap by up to +/\- this fraction of it, 0 to 1, so
+the typing stops sounding like a metronome. Requires a typewriter reveal;
+with
+.B \-\-typewriter 0
+it is an error rather than a silently ignored flag.
+.TP
 .BR \-\-vanish " \fIKIND\fR[:\fIMS\fR]"
 Exit animation, one of:
 .RS

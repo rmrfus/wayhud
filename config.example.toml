@@ -40,7 +40,7 @@ sound = { enabled = false }
 # Self-destructing message: types in, sits, then clicks its way back out.
 [style.spy]
 color = "#8ec07c"           # gruvbox bright aqua
-reveal = { kind = "typewriter", cps = 18, cursor = true }
+reveal = { kind = "typewriter", cps = 18, cursor = true, jitter = 0.35 }
 vanish = { kind = "untype", ms = 900 }
 
 [style.wipe]

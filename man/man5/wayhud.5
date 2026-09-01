@@ -191,15 +191,32 @@ key selecting the variant.
 .B { kind = "instant" }
 The whole message appears at once.
 .TP
-.BR "{ kind = \(dqtypewriter\(dq, cps = " \fIF\fR ", cursor = " \fIBOOL\fR " }"
+.BR "{ kind = \(dqtypewriter\(dq, cps = " \fIF\fR ", cursor = " \fIBOOL\fR ", jitter = " \fIF\fR " }"
 Typed out character by character.
+.RS
+.TP
 .B cps
-(float, default 28) is the speed in characters per second; a value of zero
-or less is treated as
+(float, default 28) Speed in characters per second. Zero or less is treated
+as
 .BR instant .
+.TP
 .B cursor
-(boolean, default true) draws a block caret at the write head, which keeps
+(boolean, default true) Draw a block caret at the write head. It keeps
 blinking while the text is held.
+.TP
+.B jitter
+(float, 0\(en1; default 0) Randomise each gap between keystrokes by up to
+this fraction of it, either way: 0 is a metronome, 0.3 varies every gap by up
+to 30%. The variation is symmetric, so the reveal still takes about
+.I chars
+/
+.I cps
+seconds overall. Values above 1 are rejected, since a gap would have to be
+negative.
+.IP
+The blips follow the same moments as the glyphs \- they are the same numbers,
+not a second calculation \- so sound and animation cannot drift apart.
+.RE
 .SH VANISH
 A table with a
 .B kind

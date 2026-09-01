@@ -68,6 +68,11 @@ struct Cli {
     #[arg(long)]
     typewriter: Option<f64>,
 
+    /// Randomise each keystroke gap by up to +/- this fraction (0..1), so the
+    /// typing sounds and looks less like a metronome. 0 disables it.
+    #[arg(long)]
+    jitter: Option<f64>,
+
     /// How the text goes away: instant, fade, collapse, wash-down, wash-up,
     /// untype, dissolve. Append ":MS" to set the duration, e.g. "wash-up:700".
     #[arg(long)]
@@ -105,7 +110,13 @@ fn run() -> Result<ExitCode> {
     let mut style = cfg.style(&cli.style)?;
     apply_overrides(&mut style, &cli)?;
 
-    let hud = Rc::new(Hud::new(style, text)?);
+    // Jitter is seeded from the clock so repeated messages do not stutter in
+    // the same places; tests pass their own seed.
+    let seed = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0x5bd1_e995);
+    let hud = Rc::new(Hud::new(style, text, seed)?);
 
     // Render the whole blip track before the GUI exists: it depends only on
     // the text and the typing speed, and doing it here keeps the first frame
@@ -243,12 +254,29 @@ fn apply_overrides(style: &mut Style, cli: &Cli) -> Result<()> {
         style.reveal = if cps == 0.0 {
             Reveal::Instant
         } else {
-            let cursor = match style.reveal {
-                Reveal::Typewriter { cursor, .. } => cursor,
-                Reveal::Instant => true,
+            // Carry the preset's other typewriter settings across; only the
+            // speed was asked about.
+            let (cursor, jitter) = match style.reveal {
+                Reveal::Typewriter { cursor, jitter, .. } => (cursor, jitter),
+                Reveal::Instant => (true, 0.0),
             };
-            Reveal::Typewriter { cps, cursor }
+            Reveal::Typewriter {
+                cps,
+                cursor,
+                jitter,
+            }
         };
+    }
+    if let Some(j) = cli.jitter {
+        anyhow::ensure!((0.0..=1.0).contains(&j), "--jitter must be between 0 and 1");
+        match &mut style.reveal {
+            Reveal::Typewriter { jitter, .. } => *jitter = j,
+            // Nothing to stagger, but silently ignoring a flag is worse than
+            // saying why it cannot apply.
+            Reveal::Instant => {
+                anyhow::bail!("--jitter needs a typewriter reveal; pass --typewriter too")
+            }
+        }
     }
     if let Some(v) = &cli.vanish {
         // Carry the configured duration over when the flag doesn't state one,
@@ -342,13 +370,14 @@ mod tests {
             reveal: Reveal::Typewriter {
                 cps: 10.0,
                 cursor: false,
+                jitter: 0.0,
             },
             ..Style::default()
         };
         let cli = Cli::parse_from(["wayhud", "x", "--typewriter", "40"]);
         apply_overrides(&mut s, &cli).unwrap();
         match s.reveal {
-            Reveal::Typewriter { cps, cursor } => {
+            Reveal::Typewriter { cps, cursor, .. } => {
                 assert_eq!(cps, 40.0);
                 assert!(!cursor, "an unrelated flag must not resurrect the cursor");
             }
@@ -392,6 +421,43 @@ mod tests {
         // fallback_ms.max(1) must not turn an explicit "instant" into a 1 ms
         // animation with a duration nobody asked for.
         assert_eq!(parse_vanish("instant", 0).unwrap(), Vanish::Instant);
+    }
+
+    #[test]
+    fn jitter_flag_needs_a_typewriter() {
+        let mut s = Style {
+            reveal: Reveal::Instant,
+            ..Style::default()
+        };
+        let cli = Cli::parse_from(["wayhud", "x", "--jitter", "0.3"]);
+        assert!(apply_overrides(&mut s, &cli).is_err());
+    }
+
+    #[test]
+    fn jitter_flag_applies_and_is_range_checked() {
+        let mut s = Style::default();
+        let cli = Cli::parse_from(["wayhud", "x", "--jitter", "0.4"]);
+        apply_overrides(&mut s, &cli).unwrap();
+        assert!(matches!(s.reveal, Reveal::Typewriter { jitter, .. } if jitter == 0.4));
+
+        let mut s = Style::default();
+        let cli = Cli::parse_from(["wayhud", "x", "--jitter", "2"]);
+        assert!(apply_overrides(&mut s, &cli).is_err());
+    }
+
+    #[test]
+    fn typewriter_override_keeps_the_jitter() {
+        let mut s = Style {
+            reveal: Reveal::Typewriter {
+                cps: 10.0,
+                cursor: true,
+                jitter: 0.5,
+            },
+            ..Style::default()
+        };
+        let cli = Cli::parse_from(["wayhud", "x", "--typewriter", "40"]);
+        apply_overrides(&mut s, &cli).unwrap();
+        assert!(matches!(s.reveal, Reveal::Typewriter { jitter, .. } if jitter == 0.5));
     }
 
     #[test]

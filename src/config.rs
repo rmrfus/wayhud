@@ -58,6 +58,11 @@ pub enum Reveal {
         /// Draw a block cursor at the write head.
         #[serde(default = "d_true")]
         cursor: bool,
+        /// Randomise each gap by up to +/- this fraction of it. 0 is a
+        /// metronome; 0.3 varies every gap by up to 30% either way. Clamped
+        /// to 1.0, past which a gap would want to be negative.
+        #[serde(default)]
+        jitter: f64,
     },
 }
 
@@ -188,6 +193,7 @@ impl Default for Style {
             reveal: Reveal::Typewriter {
                 cps: d_cps(),
                 cursor: true,
+                jitter: 0.0,
             },
             vanish: Vanish::Collapse { ms: d_vanish_ms() },
             sound: Sound::default(),
@@ -207,6 +213,12 @@ impl Style {
         );
         if let Some(w) = self.outline_width {
             anyhow::ensure!(w >= 0.0, "outline_width must not be negative, got {w}");
+        }
+        if let Reveal::Typewriter { jitter, .. } = self.reveal {
+            anyhow::ensure!(
+                (0.0..=1.0).contains(&jitter),
+                "reveal.jitter must be between 0 and 1, got {jitter}"
+            );
         }
         anyhow::ensure!(
             self.sound.every >= 1,
@@ -443,6 +455,19 @@ mod tests {
         // Presets are held as raw tables now, so the rejection happens when
         // one is resolved (and, for a file on disk, at load — see below).
         let c: Config = toml::from_str("[style.a]\ncolour = \"#fff\"\n").unwrap();
+        assert!(c.style("a").is_err());
+    }
+
+    #[test]
+    fn jitter_defaults_to_off_and_is_range_checked() {
+        let c: Config = toml::from_str("[style.a]\nreveal = { kind = \"typewriter\" }\n").unwrap();
+        assert!(matches!(
+            c.style("a").unwrap().reveal,
+            Reveal::Typewriter { jitter, .. } if jitter == 0.0
+        ));
+        let c: Config =
+            toml::from_str("[style.a]\nreveal = { kind = \"typewriter\", jitter = 1.5 }\n")
+                .unwrap();
         assert!(c.style("a").is_err());
     }
 

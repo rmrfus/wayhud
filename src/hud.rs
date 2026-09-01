@@ -31,7 +31,9 @@ pub struct Hud {
 }
 
 impl Hud {
-    pub fn new(style: Style, text: String) -> Result<Hud> {
+    /// `seed` drives the typewriter jitter; pass a fixed one to make a run
+    /// reproducible.
+    pub fn new(style: Style, text: String, seed: u64) -> Result<Hud> {
         let fill = gdk::RGBA::parse(&style.color)
             .with_context(|| format!("bad color {:?}", style.color))?;
         let outline = match &style.outline {
@@ -49,7 +51,7 @@ impl Hud {
              \"LythMono Nerd Font 72\"",
             style.font
         );
-        let timeline = Timeline::new(&text, &style.reveal, style.timeout_ms, &style.vanish);
+        let timeline = Timeline::new(&text, &style.reveal, style.timeout_ms, &style.vanish, seed);
         let outline_width = outline_width(&font, style.outline_width);
         Ok(Hud {
             fill,
@@ -562,10 +564,12 @@ mod tests {
     const TW: Reveal = Reveal::Typewriter {
         cps: 20.0,
         cursor: true,
+        jitter: 0.0,
     };
     const NO_CURSOR: Reveal = Reveal::Typewriter {
         cps: 20.0,
         cursor: false,
+        jitter: 0.0,
     };
     const UNTYPE: Vanish = Vanish::Untype { ms: 300 };
     const FADE: Vanish = Vanish::Fade { ms: 300 };
