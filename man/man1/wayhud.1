@@ -170,12 +170,10 @@ so a typo is reported instead of being silently ignored.
 .PP
 The file is a flat map of named presets, selected with
 .BR \-\-style .
-Presets do
-.I not
-inherit from one another: every field left unset falls back to the built\-in
-default, never to
-.BR [style.default] .
-Command\-line flags override the selected preset for that invocation.
+.B [style.default]
+is the base for every other preset: a key a preset does not set is taken from
+there, and only then from the built\-in default. Command\-line flags override
+the selected preset for that invocation.
 .PP
 Every key, its type and its default are documented in
 .BR wayhud (5).

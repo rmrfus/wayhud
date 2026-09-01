@@ -117,9 +117,11 @@ disappear with nothing touching them.
 defaults. A malformed one, or an unknown key, is an error: a typo gets
 reported instead of quietly doing nothing.
 
-Presets do **not** inherit from each other. Any field a preset leaves out falls
-back to the built-in default, never to `[style.default]` — a preset is fully
-described by its own block.
+`[style.default]` is the base for every other preset: a key a preset does not
+set is taken from there, and only then from the built-in default. Sub-tables
+(`reveal`, `vanish`, `sound`) merge key by key — except when the preset picks a
+different `kind`, which replaces the table outright, since the leftover keys
+would belong to the other variant.
 
 ```toml
 [style.default]
@@ -130,9 +132,9 @@ timeout_ms = 5000
 reveal = { kind = "typewriter", cps = 28, cursor = true }
 vanish = { kind = "collapse", ms = 420 }
 
+# Inherits the font, outline and timeout above; changes what it names.
 [style.alert]
 color = "#fb4934"
-font = "LythMono Nerd Font 96"
 vanish = { kind = "wash", ms = 300, dir = "up" }
 ```
 

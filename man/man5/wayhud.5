@@ -22,13 +22,25 @@ built\-in defaults listed below. A file that fails to parse
 an error, as is a key the program does not recognise: a misspelt setting is
 reported rather than silently ignored.
 .PP
-Presets do
-.B not
-inherit from one another. Any field a preset leaves out falls back to the
-built\-in default, never to
-.BR [style.default] .
-This is deliberate \- a preset is fully described by its own block, with no
-second table to hold in your head.
+.B [style.default]
+is the base for every other preset. A key a preset does not set is taken from
+there, and only then from the built\-in default listed below; so the shared
+font and colours are written once rather than copied into every block.
+.PP
+Sub\-tables
+.RB ( reveal ,
+.BR vanish ,
+.BR sound )
+merge key by key, so a preset can change one knob and keep the rest of the
+base's. The exception is a
+.B kind
+that differs from the base's: that replaces the sub\-table outright, because
+the remaining keys would belong to the other variant.
+.PP
+A key set in
+.B [style.default]
+therefore applies everywhere unless a preset overrides it \- including back to
+a different value.
 .PP
 Command\-line flags override the selected preset for that invocation; see
 .BR wayhud (1).
@@ -266,6 +278,10 @@ will clip.
 Blip once every N revealed characters. Whitespace never blips \- a space bar
 on a movie terminal does not click, and newlines would stutter.
 .SH EXAMPLE
+Only
+.B [style.default]
+spells out the common settings; the others state their differences.
+.PP
 A complete file with every key at its default is shipped as
 .I config.example.toml
 in the source distribution.
@@ -282,10 +298,9 @@ timeout_ms = 5000
 reveal = { kind = "typewriter", cps = 28, cursor = true }
 vanish = { kind = "collapse", ms = 420 }
 
-# Louder, redder, and it does not linger.
+# Inherits font, outline and placement from default.
 [style.alert]
 color = "#fb4934"
-font = "LythMono Nerd Font 96"
 timeout_ms = 8000
 vanish = { kind = "wash", ms = 300, dir = "up" }
 

@@ -9,9 +9,10 @@
 //! color = "#ff3355"
 //! ```
 //!
-//! Presets do NOT inherit from each other — every field falls back to the
-//! compiled-in default instead. Inheritance is a second mechanism to hold in
-//! your head at 3am for no gain: a preset is fully described by its own block.
+//! `[style.default]` is the base for every other preset: a key the preset does
+//! not set is taken from there, and only then from the compiled-in default.
+//! Anything else makes a section named "default" a lie, and forces the shared
+//! font to be copy-pasted into every preset in the file.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -216,10 +217,43 @@ impl Style {
     }
 }
 
+/// The name whose block every other preset inherits from.
+const BASE: &str = "default";
+
 #[derive(Deserialize, Default, Debug)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
-    pub style: HashMap<String, Style>,
+    /// Kept as raw tables so a preset can be merged onto the base before any
+    /// field defaults are filled in; deserialising to `Style` first would make
+    /// "unset" and "set to the compiled default" indistinguishable.
+    pub style: HashMap<String, toml::Table>,
+}
+
+/// Overlay `over` onto `base`, recursing into sub-tables.
+///
+/// A sub-table is replaced wholesale rather than merged when both sides carry
+/// a `kind` and the two differ: `kind` is the discriminant of a tagged enum,
+/// so leftovers from the other variant would be rejected as unknown fields.
+/// `vanish = { ms = 300 }` over a `collapse` base still merges — no new kind,
+/// nothing to contradict.
+fn merge_into(base: &mut toml::Table, over: &toml::Table) {
+    for (key, value) in over {
+        match (base.get_mut(key), value) {
+            (Some(toml::Value::Table(b)), toml::Value::Table(o)) if compatible(b, o) => {
+                merge_into(b, o)
+            }
+            _ => {
+                base.insert(key.clone(), value.clone());
+            }
+        }
+    }
+}
+
+fn compatible(base: &toml::Table, over: &toml::Table) -> bool {
+    match (base.get("kind"), over.get("kind")) {
+        (Some(a), Some(b)) => a == b,
+        _ => true,
+    }
 }
 
 impl Config {
@@ -236,17 +270,41 @@ impl Config {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Config::default()),
             Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
         };
-        toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))
+        let config: Config =
+            toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
+        // Type-check every preset now, not just the one that ends up selected:
+        // a misspelt key in a preset nobody asked for today is still a typo,
+        // and reporting it at load time is the whole point of
+        // deny_unknown_fields. Range checks stay per-preset — see `style`.
+        for (name, table) in &config.style {
+            table
+                .clone()
+                .try_into::<Style>()
+                .with_context(|| format!("in [style.{name}] of {}", path.display()))?;
+        }
+        Ok(config)
     }
 
     /// Look up a preset. An unknown name is an error, not a silent default:
     /// `--style alret` should say so rather than render the wrong thing.
+    /// Resolve a preset: its own keys over `[style.default]`'s, over the
+    /// compiled-in defaults.
+    ///
+    /// An unknown name is an error, not a silent fallback: `--style alret`
+    /// should say so rather than quietly render something else.
     pub fn style(&self, name: &str) -> Result<Style> {
-        let style = match self.style.get(name) {
-            Some(s) => s.clone(),
-            None if name == "default" => Style::default(),
-            None => anyhow::bail!("no [style.{name}] in the config"),
-        };
+        if name != BASE && !self.style.contains_key(name) {
+            anyhow::bail!("no [style.{name}] in the config");
+        }
+        let mut merged = self.style.get(BASE).cloned().unwrap_or_default();
+        if name != BASE {
+            if let Some(preset) = self.style.get(name) {
+                merge_into(&mut merged, preset);
+            }
+        }
+        let style: Style = merged
+            .try_into()
+            .with_context(|| format!("in [style.{name}]"))?;
         style
             .validate()
             .with_context(|| format!("in [style.{name}]"))?;
@@ -297,6 +355,83 @@ mod tests {
     }
 
     #[test]
+    fn presets_inherit_from_style_default() {
+        let c: Config = toml::from_str(
+            "[style.default]\nfont = \"Sans 40\"\ntimeout_ms = 1234\n\n\
+             [style.alert]\ncolor = \"#ff0000\"\n",
+        )
+        .unwrap();
+        let s = c.style("alert").unwrap();
+        assert_eq!(s.color, "#ff0000", "own key must win");
+        assert_eq!(
+            s.font, "Sans 40",
+            "unset key must come from [style.default]"
+        );
+        assert_eq!(s.timeout_ms, 1234);
+        // And a key neither block sets still falls through to the compiled one.
+        assert_eq!(s.margin, Style::default().margin);
+    }
+
+    #[test]
+    fn a_preset_can_override_a_base_key_back() {
+        let c: Config = toml::from_str(
+            "[style.default]\ncolor = \"#111111\"\n[style.a]\ncolor = \"#222222\"\n",
+        )
+        .unwrap();
+        assert_eq!(c.style("a").unwrap().color, "#222222");
+        assert_eq!(c.style("default").unwrap().color, "#111111");
+    }
+
+    #[test]
+    fn sub_tables_merge_key_by_key() {
+        // sound has no discriminant, so a preset tweaking one knob keeps the
+        // rest of the base's sound rather than resetting it.
+        let c: Config = toml::from_str(
+            "[style.default]\nsound = { enabled = false, freq = 900.0 }\n\
+             [style.a]\nsound = { freq = 1500.0 }\n",
+        )
+        .unwrap();
+        let s = c.style("a").unwrap();
+        assert_eq!(s.sound.freq, 1500.0);
+        assert!(!s.sound.enabled, "enabled must survive from the base");
+    }
+
+    #[test]
+    fn changing_kind_replaces_the_table_instead_of_mixing_variants() {
+        // Merging key-by-key here would leave `dir` on a collapse and `ms`
+        // from a fade, and deny_unknown_fields would reject the result.
+        let c: Config = toml::from_str(
+            "[style.default]\nvanish = { kind = \"wash\", ms = 700, dir = \"up\" }\n\
+             [style.a]\nvanish = { kind = \"collapse\" }\n\
+             [style.b]\nvanish = { ms = 250 }\n",
+        )
+        .unwrap();
+        // Different kind: the whole table is replaced, ms falls back to the
+        // compiled default rather than inheriting the wash's 700.
+        assert_eq!(c.style("a").unwrap().vanish, Vanish::Collapse { ms: 420 });
+        // Same (absent) kind: merged, so it stays a wash and keeps dir.
+        assert_eq!(
+            c.style("b").unwrap().vanish,
+            Vanish::Wash {
+                ms: 250,
+                dir: Dir::Up
+            }
+        );
+    }
+
+    #[test]
+    fn a_typo_in_any_preset_is_caught_at_load_not_at_use() {
+        let dir = std::env::temp_dir().join(format!("wayhud-cfg-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        std::fs::write(&path, "[style.unused]\ncolour = \"#fff\"\n").unwrap();
+        let err = Config::load(Some(path.clone())).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("style.unused"), "unhelpful error: {msg}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn unknown_preset_is_an_error() {
         let c: Config = toml::from_str("[style.alert]\n").unwrap();
         assert!(c.style("alret").is_err());
@@ -305,7 +440,10 @@ mod tests {
     #[test]
     fn typo_in_a_field_name_is_rejected() {
         // deny_unknown_fields: a silently ignored key is worse than a crash.
-        assert!(toml::from_str::<Config>("[style.a]\ncolour = \"#fff\"\n").is_err());
+        // Presets are held as raw tables now, so the rejection happens when
+        // one is resolved (and, for a file on disk, at load — see below).
+        let c: Config = toml::from_str("[style.a]\ncolour = \"#fff\"\n").unwrap();
+        assert!(c.style("a").is_err());
     }
 
     #[test]

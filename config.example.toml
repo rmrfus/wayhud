@@ -2,9 +2,13 @@
 #
 # Every key with its type, default and range: man 5 wayhud
 #
-# Presets do NOT inherit from each other: any field left out falls back to the
-# compiled-in default, not to [style.default]. Unknown keys are an error, so a
-# typo tells you instead of quietly doing nothing.
+# [style.default] is the base for every other preset: a key a preset does not
+# set is taken from there, and only then from the compiled-in default. Unknown
+# keys are an error, so a typo tells you instead of quietly doing nothing.
+#
+# Sub-tables merge key by key, except when the preset changes a "kind" — a
+# different vanish or reveal variant replaces the table outright, since the
+# leftover keys would belong to the other variant.
 
 [style.default]
 font = "LythMono Nerd Font 72"
