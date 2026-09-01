@@ -8,7 +8,7 @@
 font = "LythMono Nerd Font 72"
 color = "#b8bb26"           # gruvbox bright green
 outline = "#1d2021"         # gruvbox bg0_hard
-outline_width = 5.0
+# outline_width = 5.0      # omit to scale with the font size (size / 14)
 halign = "center"           # start | center | end
 valign = "center"
 margin = 64                 # only applies to an anchored (non-centre) axis

@@ -40,6 +40,10 @@ Install the hook once per clone: `git config core.hooksPath hooks`.
   the text, so an unclamped long line is silently clipped at both screen edges.
 - **Everything on screen is in logical pixels.** Every output here runs at
   `scale = 2`; mixing in device pixels looks right on exactly one monitor.
+- **The outline width scales with the font unless the config pins it.** cairo
+  centres the stroke and the fill covers its inner half, so a constant width is
+  a fixed number of pixels of halo against a stem that isn't: 21% of the stem
+  at 72pt, 62% at 24pt.
 - **Mask effects paint into a `push_group` first.** Masking the stroke and the
   fill as they are drawn erases them at different rates and leaves the outline
   hanging in the air after the fill is gone.

@@ -27,6 +27,7 @@ pub struct Hud {
     fill: gdk::RGBA,
     outline: Option<gdk::RGBA>,
     font: pango::FontDescription,
+    outline_width: f64,
 }
 
 impl Hud {
@@ -49,9 +50,11 @@ impl Hud {
             style.font
         );
         let timeline = Timeline::new(&text, &style.reveal, style.timeout_ms, &style.vanish);
+        let outline_width = outline_width(&font, style.outline_width);
         Ok(Hud {
             fill,
             outline,
+            outline_width,
             font,
             timeline,
             style,
@@ -62,7 +65,7 @@ impl Hud {
     /// Padding around the text box: the stroke straddles the glyph outline, and
     /// the caret sits past the last character.
     fn pad(&self) -> f64 {
-        self.style.outline_width.max(0.0).ceil() + 8.0
+        self.outline_width.max(0.0).ceil() + 8.0
     }
 
     /// `max_width` is the widest the text block may get, in logical pixels.
@@ -85,6 +88,32 @@ impl Hud {
         }
         layout
     }
+}
+
+/// Resolve the stroke width in logical pixels.
+///
+/// cairo centres a stroke on the glyph outline and the fill then covers the
+/// inner half, so what shows is always `width / 2` of halo. Held constant that
+/// is 21% of the stem at 72pt and 62% at 24pt — a tasteful outline on one and
+/// a fake bold on the other. Scaling with the size keeps the ratio fixed;
+/// the divisor is set so 72pt lands on the 5.0 that was picked by eye.
+fn outline_width(font: &pango::FontDescription, configured: Option<f64>) -> f64 {
+    if let Some(w) = configured {
+        return w.max(0.0);
+    }
+    let size = font.size();
+    if size <= 0 {
+        // No size in the description at all; pango will pick its own default,
+        // so there is nothing to scale against.
+        return 1.0;
+    }
+    // An absolute size is already in device units rather than points.
+    let points = if font.is_size_absolute() {
+        size as f64 / pango::SCALE as f64 * 72.0 / 96.0
+    } else {
+        size as f64 / pango::SCALE as f64
+    };
+    (points / 14.0).max(0.5)
 }
 
 /// Frame state shared between the tick callback and the draw callback.
@@ -369,7 +398,7 @@ fn paint_text(
     pangocairo::functions::layout_path(cr, layout);
     if let Some(o) = hud.outline {
         set_color(cr, o, alpha, whiten);
-        cr.set_line_width(hud.style.outline_width);
+        cr.set_line_width(hud.outline_width);
         cr.set_line_join(gtk::cairo::LineJoin::Round);
         let _ = cr.stroke_preserve();
     }
@@ -517,6 +546,34 @@ mod tests {
     };
     const UNTYPE: Vanish = Vanish::Untype { ms: 300 };
     const FADE: Vanish = Vanish::Fade { ms: 300 };
+
+    #[test]
+    fn outline_scales_with_the_font_unless_pinned() {
+        let w = |spec: &str| outline_width(&pango::FontDescription::from_string(spec), None);
+        // 72pt keeps the hand-picked 5.0; the rest follow the same ratio.
+        assert!((w("LythMono Nerd Font 72") - 72.0 / 14.0).abs() < 1e-9);
+        assert!(w("LythMono Nerd Font 24") < w("LythMono Nerd Font 48"));
+        // A configured value stays absolute, however odd.
+        let pinned = outline_width(
+            &pango::FontDescription::from_string("LythMono Nerd Font 24"),
+            Some(9.0),
+        );
+        assert_eq!(pinned, 9.0);
+    }
+
+    #[test]
+    fn outline_width_survives_a_font_with_no_size() {
+        // from_string("Sans") leaves size at 0; scaling against that would
+        // give a zero-width stroke that silently draws nothing.
+        let w = outline_width(&pango::FontDescription::from_string("Sans"), None);
+        assert!(w > 0.0, "got {w}");
+    }
+
+    #[test]
+    fn negative_configured_width_is_clamped_not_passed_to_cairo() {
+        let w = outline_width(&pango::FontDescription::from_string("Sans 20"), Some(-3.0));
+        assert_eq!(w, 0.0);
+    }
 
     #[test]
     fn untype_gets_a_caret_even_after_an_instant_reveal() {

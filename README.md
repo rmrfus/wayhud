@@ -121,7 +121,7 @@ instead of quietly doing nothing.
 [style.default]
 font = "LythMono Nerd Font 72"
 color = "#b8bb26"
-outline = "#1d2021"
+outline = "#1d2021"          # width scales with the font unless pinned
 timeout_ms = 5000
 reveal = { kind = "typewriter", cps = 28, cursor = true }
 vanish = { kind = "collapse", ms = 420 }

@@ -152,7 +152,9 @@ pub struct Style {
     pub color: String,
     /// `None` (absent in TOML) means no outline pass at all.
     pub outline: Option<String>,
-    pub outline_width: f64,
+    /// Stroke width in logical pixels. Left unset it scales with the font
+    /// size, which is almost always what you want — see `Hud::outline_width`.
+    pub outline_width: Option<f64>,
     pub halign: Align,
     pub valign: Align,
     /// Gap from the anchored edge, in logical px. Ignored on a centred axis.
@@ -171,7 +173,7 @@ impl Default for Style {
             font: "LythMono Nerd Font 72".to_string(),
             color: "#b8bb26".to_string(),         // gruvbox bright green
             outline: Some("#1d2021".to_string()), // gruvbox bg0_hard
-            outline_width: 5.0,
+            outline_width: None,
             halign: Align::Center,
             valign: Align::Center,
             margin: 64,
@@ -284,6 +286,14 @@ mod tests {
         let s = c.style("a").unwrap();
         assert!(matches!(s.reveal, Reveal::Instant));
         assert!(matches!(s.vanish, Vanish::Fade { ms: 100 }));
+    }
+
+    #[test]
+    fn outline_width_is_optional_and_unset_by_default() {
+        let c: Config = toml::from_str("[style.a]\n").unwrap();
+        assert_eq!(c.style("a").unwrap().outline_width, None);
+        let c: Config = toml::from_str("[style.a]\noutline_width = 2.5\n").unwrap();
+        assert_eq!(c.style("a").unwrap().outline_width, Some(2.5));
     }
 
     #[test]

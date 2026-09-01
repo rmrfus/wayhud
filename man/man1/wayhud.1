@@ -84,6 +84,12 @@ Outline colour, or
 .B none
 to draw the glyphs flat. The outline is a real cairo stroke around the glyph
 path, not a shadow, so it stays clean at display sizes.
+.IP
+Its width comes from
+.B outline_width
+in the config. Left unset there, it scales with the font size, keeping the
+halo a fixed fraction of the stem: a constant width that looks like a fine
+contour at 72pt reads as fake bold at 24pt.
 .TP
 .BR \-\-position " \fIPLACE\fR"
 Where the text block sits:
@@ -174,7 +180,7 @@ default, never to
 font = "LythMono Nerd Font 72"
 color = "#b8bb26"
 outline = "#1d2021"
-outline_width = 5.0
+# outline_width = 5.0    # omit: scales with the font size
 halign = "center"        # start | center | end
 valign = "center"
 margin = 64
