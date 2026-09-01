@@ -1,6 +1,6 @@
 [package]
 name = "wayhud"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 # Set by the gtk-rs family, which is the whole dependency tree's ceiling; our
 # own code only needs 1.87 (is_multiple_of). Without this, a stable-but-older
