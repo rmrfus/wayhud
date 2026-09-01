@@ -1,0 +1,39 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Publish release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      # No prebuilt binaries here on purpose: wayhud links dynamically against
+      # GTK4 and gtk4-layer-shell, so a binary built on this runner would only
+      # run on a host with the same library versions. `nix run` builds against
+      # the consumer's own nixpkgs instead. This job just proves the tag builds
+      # before the release goes out.
+      - name: Verify the tag builds
+        run: nix build
+
+      - name: Publish
+        run: |
+          gh release delete "${GITHUB_REF_NAME}" --yes --repo "${GITHUB_REPOSITORY}" 2>/dev/null || true
+          gh release create "${GITHUB_REF_NAME}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --title "${GITHUB_REF_NAME}" \
+            --generate-notes
+        env:
+          GH_TOKEN: ${{ github.token }}

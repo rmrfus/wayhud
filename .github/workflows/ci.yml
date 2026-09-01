@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    # Built through nix rather than rustup: this links against GTK4,
+    # gtk4-layer-shell and libpulse, and the flake is the only place those are
+    # pinned to versions known to work together. It also means CI compiles the
+    # same way a user running `nix run github:rmrfus/wayhud` does.
+    name: fmt · clippy · test · package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      - name: Format
+        run: nix develop --command cargo fmt --all --check
+
+      - name: Clippy
+        run: nix develop --command cargo clippy --all-targets --locked -- -D warnings
+
+      - name: Test
+        run: nix develop --command cargo test --locked
+
+      - name: Man page
+        run: nix develop --command groff -man -Tutf8 -ww -z man/man1/wayhud.1
+
+      - name: Package
+        run: nix build

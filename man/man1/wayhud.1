@@ -1,0 +1,260 @@
+.TH WAYHUD 1 "2026-09-01" "wayhud" "User Commands"
+.SH NAME
+wayhud \- heads\-up text overlay for sway
+.SH SYNOPSIS
+.B wayhud
+[\fIOPTIONS\fR]
+[\fITEXT\fR]
+.SH DESCRIPTION
+.B wayhud
+puts a message on screen above every window, as a Wayland layer\-shell
+overlay on the
+.B overlay
+layer. The text can appear all at once or be typed out terminal\-style with
+a caret and a synthesised blip per keystroke, and it leaves with one of
+several exit animations.
+.PP
+It is a one\-shot program: it shows the message, waits, and exits. Two
+concurrent invocations are two processes and two layer surfaces, which the
+compositor stacks.
+.PP
+The overlay keeps an empty input region, so it never intercepts pointer or
+keyboard events \- whatever is underneath stays usable.
+.PP
+.I TEXT
+is taken from the command line; if it is omitted or given as
+.BR - ,
+the message is read from standard input instead. In a command\-line
+argument the escapes
+.BR \en ,
+.B \et
+and
+.B \e\e
+are expanded, because sway runs
+.B exec
+through
+.BR sh ,
+which has no
+.BR $'...'
+quoting. Text arriving on standard input is used verbatim.
+.SH OPTIONS
+.TP
+.BR \-o ", " \-\-output " \fISPEC\fR"
+Which outputs to show on:
+.B current
+(the output sway currently has focus on),
+.B all
+(every enabled output), or a comma\-separated list of connector names such as
+.BR DP\-3,eDP\-1 .
+Default:
+.BR current .
+.IP
+.B current
+queries sway over its IPC socket, because Wayland gives a client no way to
+learn which output is focused. Without
+.B SWAYSOCK
+it fails rather than guessing. A named output that does not exist is
+reported and skipped; if nothing matches at all, that is an error.
+.TP
+.BR \-t ", " \-\-timeout " \fISECONDS\fR"
+How long the fully revealed text stays up. Measured from the
+.I end
+of the reveal, not from start\-up, so a slow typewriter does not eat into
+the reading time. Default: 5.
+.TP
+.BR \-s ", " \-\-style " \fINAME\fR"
+Style preset from the config file. Default:
+.BR default .
+An unknown name is an error.
+.TP
+.BR \-\-font " \fIDESC\fR"
+Pango font description, e.g.
+.BR "\(dqLythMono Nerd Font 72\(dq" .
+Note that the family name must match fontconfig exactly; a family that does
+not resolve falls back silently to the default font.
+.TP
+.BR \-\-color " \fICOLOUR\fR"
+Fill colour of the glyphs. Any colour GTK's CSS parser accepts:
+.BR #b8bb26 ,
+.BR "rgba(184,187,38,0.8)" ,
+.BR green .
+.TP
+.BR \-\-outline " \fICOLOUR\fR"
+Outline colour, or
+.B none
+to draw the glyphs flat. The outline is a real cairo stroke around the glyph
+path, not a shadow, so it stays clean at display sizes.
+.TP
+.BR \-\-position " \fIPLACE\fR"
+Where the text block sits:
+.BR center ,
+.BR top ,
+.BR bottom ,
+.BR left ,
+.BR right ,
+or a hyphenated pair such as
+.B top\-left
+or
+.BR bottom\-right ,
+in either order. A centred axis ignores the configured margin.
+.TP
+.BR \-\-typewriter " \fICPS\fR"
+Reveal speed in characters per second.
+.B 0
+reveals the whole message instantly.
+.TP
+.BR \-\-vanish " \fIKIND\fR[:\fIMS\fR]"
+Exit animation, one of:
+.RS
+.TP
+.B instant
+Gone on the frame the hold expires.
+.TP
+.B fade
+Alpha to zero.
+.TP
+.B collapse
+CRT power\-off: squashes to a bright line, blooms wider, blinks out.
+.TP
+.B wash\-down
+A soft edge sweeps top to bottom, erasing as it passes.
+.TP
+.B wash\-up
+The same, bottom to top.
+.TP
+.B untype
+The caret walks back and eats the text, blipping as it goes. The only exit
+that makes a sound.
+.TP
+.B dissolve
+The glyphs fall apart into blocks in a fixed pseudo\-random order.
+.RE
+.IP
+Without
+.RI : MS
+the flag keeps whatever duration the preset already had, so effects can be
+cycled without restating the timing.
+.TP
+.B \-\-no\-sound
+Stay silent regardless of what the style asks for.
+.TP
+.B \-\-raw
+Take
+.I TEXT
+literally: do not expand
+.BR \en ,
+.B \et
+or
+.BR \e\e .
+.TP
+.BR \-\-config " \fIPATH\fR"
+Config file to read. Default:
+.IR $XDG_CONFIG_HOME/wayhud/config.toml .
+.TP
+.BR \-h ", " \-\-help
+Print a usage summary and exit.
+.SH CONFIGURATION
+.B wayhud
+reads
+.I $XDG_CONFIG_HOME/wayhud/config.toml
+(falling back to
+.IR ~/.config/wayhud/config.toml ).
+A missing file is fine; a malformed one is an error, as is an unknown key,
+so a typo is reported instead of being silently ignored.
+.PP
+The file is a flat map of named presets. Presets do
+.I not
+inherit from one another: every field left unset falls back to the built\-in
+default, never to
+.BR [style.default] .
+.PP
+.RS
+.nf
+[style.default]
+font = "LythMono Nerd Font 72"
+color = "#b8bb26"
+outline = "#1d2021"
+outline_width = 5.0
+halign = "center"        # start | center | end
+valign = "center"
+margin = 64
+line_align = "left"      # left | center | right
+timeout_ms = 5000
+reveal = { kind = "typewriter", cps = 28, cursor = true }
+vanish = { kind = "collapse", ms = 420 }
+sound = { enabled = true, freq = 2100.0, decay_ms = 38.0, gain = 0.22, every = 1 }
+.fi
+.RE
+.PP
+.B reveal
+is either
+.B { kind = "instant" }
+or
+.BR "{ kind = \(dqtypewriter\(dq, cps = N, cursor = BOOL }" .
+.B vanish
+takes the same kinds as
+.BR \-\-vanish ,
+with
+.B wash
+carrying an extra
+.B dir
+of
+.B down
+or
+.BR up .
+.SH SOUND
+The typewriter blip is synthesised at run time rather than loaded from a
+file, so the program carries no assets. The knobs match those of
+.BR blyamk (1);
+a sound dialled in there with
+.B blyamk \-v
+transfers verbatim into a
+.B [style.X.sound]
+block.
+.PP
+The entire click track is mixed before the first frame and written to
+PulseAudio in one go, so the clicks stay locked to the characters instead of
+inheriting the sound server's per\-write scheduling jitter. If no sound
+server is reachable, the message is still shown and the failure is reported
+on standard error.
+.SH EXAMPLES
+.TP
+A message on the focused output, default style:
+.B wayhud \(dqSYSTEM ONLINE\(dq
+.TP
+Ten seconds, every screen, pinned to the top:
+.B wayhud \-o all \-t 10 \-\-position top \(dqBUILD FAILED\(dq
+.TP
+Two lines from a keybinding in the sway config:
+.B bindsym $mod+Shift+h exec wayhud \(dqLOCKED\enBACK IN 5\(dq
+.TP
+Piped in, no animation, no sound:
+.B echo \(dq$(uptime)\(dq | wayhud \-\-typewriter 0 \-\-no\-sound
+.TP
+Self\-destructing note:
+.B wayhud \-s spy \-\-vanish untype:900 \(dqTHIS MESSAGE WILL SELF DESTRUCT\(dq
+.SH ENVIRONMENT
+.TP
+.B SWAYSOCK
+Path to sway's IPC socket. Required for
+.BR "\-\-output current" .
+.TP
+.B XDG_CONFIG_HOME
+Base directory for the config file. Falls back to
+.IR $HOME/.config .
+.SH EXIT STATUS
+.TP
+.B 0
+The message was shown and its lifetime ran out.
+.TP
+.B 1
+Bad arguments, unreadable or invalid config, no matching output, or no
+display.
+.SH SEE ALSO
+.BR sway (1),
+.BR swaymsg (1),
+.BR pango-markup (7)
+.SH AUTHORS
+Written by rmrfus. Source and issues at
+.UR https://github.com/rmrfus/wayhud
+.UE .
