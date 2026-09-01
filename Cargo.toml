@@ -1,0 +1,25 @@
+[package]
+name = "wayhud"
+version = "0.1.0"
+edition = "2021"
+description = "Layer-shell text overlay for sway — sci-fi HUD messages"
+license = "MIT"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+gtk = { package = "gtk4", version = "0.11", features = ["v4_12"] }
+gtk-layer-shell = { package = "gtk4-layer-shell", version = "0.8" }
+# Version must track the pango/cairo-rs that gtk4 pulls in (0.22.x), or the
+# Layout/Context types won't be the same types.
+pangocairo = "0.22"
+serde = { version = "1", features = ["derive"] }
+swayipc = "4"
+toml = "0.8"
+# Same audio path as blyamk: synth straight to PipeWire/PulseAudio, no assets.
+libpulse-binding = "2"
+libpulse-simple-binding = "2"
+
+[profile.release]
+lto = true
+strip = true

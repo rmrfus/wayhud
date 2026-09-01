@@ -1,0 +1,31 @@
+# Copy to $XDG_CONFIG_HOME/wayhud/config.toml.
+#
+# Presets do NOT inherit from each other: any field left out falls back to the
+# compiled-in default, not to [style.default]. Unknown keys are an error, so a
+# typo tells you instead of quietly doing nothing.
+
+[style.default]
+font = "LythMono Nerd Font 72"
+color = "#b8bb26"           # gruvbox bright green
+outline = "#1d2021"         # gruvbox bg0_hard
+outline_width = 5.0
+halign = "center"           # start | center | end
+valign = "center"
+margin = 64                 # only applies to an anchored (non-centre) axis
+line_align = "left"         # alignment of lines inside the block
+timeout_ms = 5000           # hold AFTER the reveal finishes
+reveal = { kind = "typewriter", cps = 28, cursor = true }
+vanish = { kind = "collapse", ms = 420 }
+sound = { enabled = true, freq = 2100.0, decay_ms = 38.0, gain = 0.22, every = 1 }
+
+[style.alert]
+color = "#fb4934"           # gruvbox bright red
+font = "LythMono Nerd Font 96"
+timeout_ms = 8000
+reveal = { kind = "typewriter", cps = 45, cursor = true }
+vanish = { kind = "fade", ms = 250 }
+
+[style.quiet]
+reveal = { kind = "instant" }
+vanish = { kind = "fade", ms = 200 }
+sound = { enabled = false }
