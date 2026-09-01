@@ -136,7 +136,7 @@ pub fn present(
     hud: Rc<Hud>,
     on_first_frame: Rc<dyn Fn()>,
     on_closed: impl Fn() + 'static,
-) {
+) -> Result<()> {
     // A plain GtkWindow, not a GtkApplicationWindow: GtkApplication would
     // register on the session bus and go looking for the Inhibit portal, which
     // no backend provides under sway. We need none of what it offers.
@@ -161,7 +161,11 @@ pub fn present(
     // typewriter and drag the text across the screen as it goes.
     let pad = hud.pad();
     let max_width = text_budget(monitor, &hud.style, pad);
-    let (tw, th) = hud.layout_for(&area, max_width).pixel_size();
+    // Shaped once and reused: the text, font and width never change, and a
+    // vanish redraws every frame — re-shaping there would burn a full pango
+    // layout pass 60 times a second on each output.
+    let layout = Rc::new(hud.layout_for(&area, max_width));
+    let (tw, th) = layout.pixel_size();
     area.set_content_width(tw + (pad * 2.0) as i32);
     area.set_content_height(th + (pad * 2.0) as i32);
 
@@ -175,15 +179,8 @@ pub fn present(
     area.set_draw_func({
         let hud = hud.clone();
         let frame = frame.clone();
-        move |area, cr, _w, _h| {
-            draw(
-                area,
-                cr,
-                &hud,
-                max_width,
-                frame.phase.get(),
-                frame.t_ms.get(),
-            );
+        move |_area, cr, _w, _h| {
+            draw(cr, &hud, &layout, frame.phase.get(), frame.blink.get());
         }
     });
 
@@ -233,9 +230,15 @@ pub fn present(
     // Click-through. Without an empty input region the overlay eats pointer
     // events for whatever sits under it — which, at Layer::Overlay, is
     // everything. Only available once the surface exists, hence after present.
-    if let Some(surface) = window.surface() {
-        surface.set_input_region(Some(&gtk::cairo::Region::create()));
-    }
+    //
+    // Refuse to stay up if it can't be set: an overlay nobody can click
+    // through is worse than a message nobody sees, and a silent skip here
+    // would leave the pointer trapped with no hint as to why.
+    let surface = window
+        .surface()
+        .context("window has no surface after present; cannot make it click-through")?;
+    surface.set_input_region(Some(&gtk::cairo::Region::create()));
+    Ok(())
 }
 
 fn apply_anchors(window: &gtk::Window, style: &Style) {
@@ -277,14 +280,7 @@ fn text_budget(monitor: &gdk::Monitor, style: &Style, pad: f64) -> i32 {
     (geom.width() - margins - (pad * 2.0) as i32).max(1)
 }
 
-fn draw(
-    area: &gtk::DrawingArea,
-    cr: &gtk::cairo::Context,
-    hud: &Hud,
-    max_width: i32,
-    phase: Phase,
-    t_ms: f64,
-) {
+fn draw(cr: &gtk::cairo::Context, hud: &Hud, layout: &pango::Layout, phase: Phase, caret_on: bool) {
     let total = hud.timeline.chars();
     let (mut visible, vanish_p) = match phase {
         Phase::Reveal { chars } => (chars, 0.0),
@@ -293,9 +289,11 @@ fn draw(
         Phase::Done => return,
     };
 
-    let layout = hud.layout_for(area, max_width);
-    let (tw, th) = layout.pixel_size();
-    let (tw, th) = (tw as f64, th as f64);
+    // Bind the cached layout to this cairo context (font options, resolution)
+    // without re-shaping it.
+    pangocairo::functions::update_layout(cr, layout);
+    let (_, th) = layout.pixel_size();
+    let th = th as f64;
     let pad = hud.pad();
 
     // Untype isn't a paint effect: it runs the reveal backwards, so it edits
@@ -347,9 +345,11 @@ fn draw(
         cr.push_group();
     }
 
-    paint_text(cr, &layout, hud, visible, total, alpha, whiten, pad);
-    if show_caret(&hud.style.reveal, &hud.style.vanish, phase, t_ms) {
-        let caret = caret_rect(&layout, &hud.text, visible);
+    paint_text(cr, layout, hud, visible, total, alpha, whiten, pad);
+    // Blink state is decided once per tick; recomputing it here would be a
+    // second source of truth for the same thing.
+    if caret_on {
+        let caret = caret_rect(layout, &hud.text, visible);
         set_color(cr, hud.fill, alpha, whiten);
         cr.rectangle(caret.x, caret.y, caret.w, caret.h);
         let _ = cr.fill();
@@ -362,11 +362,15 @@ fn draw(
                 let _ = cr.mask(wash_gradient(th, vanish_p, dir));
             }
             Vanish::Dissolve { .. } => {
-                if let Some(surface) = dissolve_mask(tw, th, pad, vanish_p) {
+                let (tw, _) = layout.pixel_size();
+                if let Some(surface) = dissolve_mask(tw as f64, th, pad, vanish_p) {
                     let _ = cr.mask_surface(&surface, -pad, -pad);
                 }
             }
-            _ => unreachable!("masked is only set for wash and dissolve"),
+            // Unreachable given how `masked` is computed, but a panic inside a
+            // draw callback aborts the process on top of the screen; leaving
+            // the group unmasked just shows the text.
+            _ => {}
         }
     }
 

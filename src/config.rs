@@ -289,6 +289,18 @@ mod tests {
     }
 
     #[test]
+    fn shipped_example_config_parses() {
+        // README calls this file the reference for every key. With
+        // deny_unknown_fields a stale example is an invalid config, and
+        // without this test the user finds that out, not CI.
+        let text = include_str!("../config.example.toml");
+        let cfg: Config = toml::from_str(text).expect("config.example.toml must parse");
+        for name in ["default", "alert", "quiet", "spy", "wipe"] {
+            assert!(cfg.style(name).is_ok(), "example lost [style.{name}]");
+        }
+    }
+
+    #[test]
     fn outline_width_is_optional_and_unset_by_default() {
         let c: Config = toml::from_str("[style.a]\n").unwrap();
         assert_eq!(c.style("a").unwrap().outline_width, None);

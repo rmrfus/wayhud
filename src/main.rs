@@ -16,6 +16,7 @@ use std::io::{IsTerminal, Read};
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::rc::Rc;
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use clap::Parser;
@@ -85,6 +86,10 @@ struct Cli {
     config: Option<PathBuf>,
 }
 
+/// One hour. Long enough for anything a heads-up message is for, short enough
+/// that a typo can't strand the overlay on screen.
+const MAX_TIMEOUT_S: f64 = 3600.0;
+
 fn main() -> ExitCode {
     match run() {
         Ok(code) => code,
@@ -109,14 +114,21 @@ fn run() -> Result<ExitCode> {
     // Render the whole blip track before the GUI exists: it depends only on
     // the text and the typing speed, and doing it here keeps the first frame
     // from stalling on synthesis.
-    let mut onsets = hud.timeline.onsets(&hud.text, hud.style.sound.every);
-    // Untype clicks its way back out; every other vanish is silent.
-    onsets.extend(hud.timeline.vanish_onsets(&hud.text, hud.style.sound.every));
-    let pcm = RefCell::new(Some(sound::typewriter_track(&hud.style.sound, &onsets)));
+    let cfg = &hud.style.sound;
+    let reveal_pcm = sound::typewriter_track(cfg, &hud.timeline.onsets(&hud.text, cfg.every));
+    // Untype clicks its way back out; every other vanish is silent. It is a
+    // separate track played after a delay, rather than one track starting at
+    // t0: mixing it in would allocate silence for the whole hold, so
+    // `--timeout 3600` would cost a gigabyte of zeroes.
+    let vanish_pcm =
+        sound::typewriter_track(cfg, &hud.timeline.vanish_onsets(&hud.text, cfg.every));
+    let vanish_delay = Duration::from_secs_f64(hud.timeline.vanish_start().max(0.0));
+    let tracks = RefCell::new(Some((reveal_pcm, vanish_pcm)));
     // take() makes this fire exactly once no matter how many windows call it.
     let on_first_frame: Rc<dyn Fn()> = Rc::new(move || {
-        if let Some(pcm) = pcm.borrow_mut().take() {
-            sound::play_detached(pcm);
+        if let Some((reveal, vanish)) = tracks.borrow_mut().take() {
+            sound::play_detached(reveal, Duration::ZERO);
+            sound::play_detached(vanish, vanish_delay);
         }
     });
 
@@ -140,7 +152,7 @@ fn run() -> Result<ExitCode> {
                     main_loop.quit();
                 }
             }
-        });
+        })?;
     }
     main_loop.run();
     Ok(ExitCode::SUCCESS)
@@ -220,7 +232,13 @@ fn apply_overrides(style: &mut Style, cli: &Cli) -> Result<()> {
         style.outline = if o == "none" { None } else { Some(o.clone()) };
     }
     if let Some(t) = cli.timeout {
-        anyhow::ensure!(t >= 0.0, "--timeout must not be negative");
+        // An upper bound as well as a lower one: the value comes from argv,
+        // and there is no way to dismiss a HUD early, so a fat-fingered
+        // exponent would pin it to the screen for years.
+        anyhow::ensure!(
+            (0.0..=MAX_TIMEOUT_S).contains(&t),
+            "--timeout must be between 0 and {MAX_TIMEOUT_S} seconds"
+        );
         style.timeout_ms = (t * 1000.0) as u64;
     }
     if let Some(cps) = cli.typewriter {
@@ -393,6 +411,16 @@ mod tests {
         let cli = Cli::parse_from(["wayhud", "x", "--outline", "none"]);
         apply_overrides(&mut s, &cli).unwrap();
         assert!(s.outline.is_none());
+    }
+
+    #[test]
+    fn absurd_timeouts_are_rejected_at_the_edge() {
+        let mut s = Style::default();
+        // 1e9 seconds used to reach the mixer and try to allocate the silence.
+        let cli = Cli::parse_from(["wayhud", "x", "--timeout", "1e9"]);
+        assert!(apply_overrides(&mut s, &cli).is_err());
+        let cli = Cli::parse_from(["wayhud", "x", "--timeout", "3600"]);
+        assert!(apply_overrides(&mut s, &cli).is_ok());
     }
 
     #[test]

@@ -2,6 +2,10 @@
 name = "wayhud"
 version = "0.1.0"
 edition = "2021"
+# Set by the gtk-rs family, which is the whole dependency tree's ceiling; our
+# own code only needs 1.87 (is_multiple_of). Without this, a stable-but-older
+# toolchain fails deep inside a dependency instead of saying what it needs.
+rust-version = "1.92"
 description = "Layer-shell text overlay for sway — sci-fi HUD messages"
 license = "MIT"
 

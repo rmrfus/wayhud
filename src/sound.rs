@@ -49,14 +49,21 @@ pub fn typewriter_track(cfg: &Sound, onsets: &[f64]) -> Vec<i16> {
         .collect()
 }
 
-/// Play the track on a detached thread. Audio failures are reported and then
-/// dropped: no sound server is a reason to be quiet, not a reason to skip the
-/// message the user asked to see.
-pub fn play_detached(pcm: Vec<i16>) {
+/// Play the track on a detached thread, optionally after a delay. Audio
+/// failures are reported and then dropped: no sound server is a reason to be
+/// quiet, not a reason to skip the message the user asked to see.
+///
+/// The delay exists so a long hold costs nothing: mixing the untype blips into
+/// one track that starts at t0 would allocate silence for the whole timeout,
+/// and `--timeout 3600` alone would be a gigabyte of zeroes.
+pub fn play_detached(pcm: Vec<i16>, delay: std::time::Duration) {
     if pcm.is_empty() {
         return;
     }
     std::thread::spawn(move || {
+        if !delay.is_zero() {
+            std::thread::sleep(delay);
+        }
         if let Err(e) = play(&pcm) {
             eprintln!("wayhud: audio: {e:#}");
         }

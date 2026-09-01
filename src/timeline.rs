@@ -90,21 +90,28 @@ impl Timeline {
             .collect()
     }
 
-    /// Blips for an untype vanish, in seconds from t0. Empty for every other
-    /// mode — nothing is being struck, so nothing should click.
+    /// Blips for an untype vanish, in seconds from the START OF THE VANISH —
+    /// not from t0. The caller delays playback by `vanish_start()` instead, so
+    /// a long hold never turns into allocated silence.
+    ///
+    /// Empty for every other mode: nothing is being struck, so nothing clicks.
     pub fn vanish_onsets(&self, text: &str, every: usize) -> Vec<f64> {
         if !self.untype || self.vanish_ms <= 0.0 || self.chars == 0 {
             return Vec::new();
         }
         let every = every.max(1);
-        let base = (self.reveal_ms + self.hold_ms) / 1000.0;
         let step = self.vanish_ms / self.chars as f64 / 1000.0;
         text.chars()
             .enumerate()
             .filter(|(i, c)| !c.is_whitespace() && i.is_multiple_of(every))
             // Erased from the end: the last character goes first.
-            .map(|(i, _)| base + (self.chars - i) as f64 * step)
+            .map(|(i, _)| (self.chars - i) as f64 * step)
             .collect()
+    }
+
+    /// When the vanish begins, in seconds from t0.
+    pub fn vanish_start(&self) -> f64 {
+        (self.reveal_ms + self.hold_ms) / 1000.0
     }
 
     pub fn chars(&self) -> usize {
@@ -173,17 +180,25 @@ mod tests {
     }
 
     #[test]
-    fn untype_blips_run_backwards_after_the_hold() {
+    fn untype_blips_run_backwards_and_are_vanish_relative() {
         let tl = Timeline::new("abcd", &tw(10.0), 1000, &Vanish::Untype { ms: 400 });
-        // reveal 400 ms + hold 1000 ms = 1.4 s before the first erase blip.
+        // reveal 400 ms + hold 1000 ms.
+        assert!((tl.vanish_start() - 1.4).abs() < 1e-9);
         let on = tl.vanish_onsets("abcd", 1);
         assert_eq!(on.len(), 4);
         // Char 3 (the last) is erased first, char 0 last.
         assert!(on[3] < on[0], "erase order must be reversed: {on:?}");
-        assert!(
-            on.iter().all(|&t| t >= 1.4),
-            "blip before the hold ended: {on:?}"
-        );
+        // Relative to the vanish, so bounded by its duration however long the
+        // hold was — that is what keeps the mixed track small.
+        assert!(on.iter().all(|&t| t <= 0.4), "not vanish-relative: {on:?}");
+    }
+
+    #[test]
+    fn a_huge_hold_does_not_inflate_the_vanish_onsets() {
+        // The bug this guards: onsets measured from t0 made typewriter_track
+        // allocate silence for the whole timeout — an hour was a gigabyte.
+        let tl = Timeline::new("ab", &tw(10.0), 3_600_000, &Vanish::Untype { ms: 200 });
+        assert!(tl.vanish_onsets("ab", 1).iter().all(|&t| t <= 0.2));
     }
 
     #[test]
