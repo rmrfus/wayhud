@@ -13,6 +13,13 @@ use crate::synth::{render_f64, Params};
 
 const RATE: u32 = 48_000;
 
+/// Longest track we will mix, in seconds. The buffer is sized from the last
+/// onset, so this is the difference between a bad number reaching us and an
+/// abort: an hour of f64 samples is 1.4 GB, and `--typewriter 1e-9` asked for
+/// 768 TB. Callers bound the message lifetime too; this is the backstop that
+/// does not depend on them getting it right.
+const MAX_TRACK_S: f64 = 120.0;
+
 /// Mix one blip in at each onset (seconds) and quantise to mono i16.
 /// Returns an empty buffer when there is nothing to play.
 pub fn typewriter_track(cfg: &Sound, onsets: &[f64]) -> Vec<i16> {
@@ -32,10 +39,21 @@ pub fn typewriter_track(cfg: &Sound, onsets: &[f64]) -> Vec<i16> {
         return Vec::new();
     }
 
+    // Drop anything non-finite or beyond the cap rather than sizing a buffer
+    // from it. A blip nobody would still be around to hear is not worth an
+    // out-of-memory abort.
+    let onsets: Vec<f64> = onsets
+        .iter()
+        .copied()
+        .filter(|t| t.is_finite() && (0.0..=MAX_TRACK_S).contains(t))
+        .collect();
+    if onsets.is_empty() {
+        return Vec::new();
+    }
     let last = onsets.iter().cloned().fold(0.0_f64, f64::max);
     let total = (last * RATE as f64).ceil() as usize + blip.len();
     let mut acc = vec![0.0_f64; total];
-    for &t in onsets {
+    for &t in &onsets {
         let start = (t.max(0.0) * RATE as f64).round() as usize;
         for (i, v) in blip.iter().enumerate() {
             // Overlapping tails simply sum; the clamp below is the only
@@ -56,18 +74,22 @@ pub fn typewriter_track(cfg: &Sound, onsets: &[f64]) -> Vec<i16> {
 /// The delay exists so a long hold costs nothing: mixing the untype blips into
 /// one track that starts at t0 would allocate silence for the whole timeout,
 /// and `--timeout 3600` alone would be a gigabyte of zeroes.
-pub fn play_detached(pcm: Vec<i16>, delay: std::time::Duration) {
+#[must_use = "join the handle before exiting or the tail is cut off"]
+pub fn play_detached(
+    pcm: Vec<i16>,
+    delay: std::time::Duration,
+) -> Option<std::thread::JoinHandle<()>> {
     if pcm.is_empty() {
-        return;
+        return None;
     }
-    std::thread::spawn(move || {
+    Some(std::thread::spawn(move || {
         if !delay.is_zero() {
             std::thread::sleep(delay);
         }
         if let Err(e) = play(&pcm) {
             eprintln!("wayhud: audio: {e:#}");
         }
-    });
+    }))
 }
 
 fn play(pcm: &[i16]) -> Result<()> {
@@ -139,5 +161,21 @@ mod tests {
     fn negative_onset_does_not_panic() {
         let t = typewriter_track(&cfg(), &[-1.0, 0.5]);
         assert!(!t.is_empty());
+    }
+
+    #[test]
+    fn absurd_onsets_do_not_size_the_buffer() {
+        // --typewriter 1e-9 reached here and asked for 768 TB.
+        let t = typewriter_track(&cfg(), &[1e12]);
+        assert!(t.is_empty(), "an out-of-range onset must be dropped");
+        // A sane onset alongside it still plays.
+        let t = typewriter_track(&cfg(), &[0.1, 1e12]);
+        assert!(!t.is_empty());
+        assert!(t.len() < (MAX_TRACK_S as usize + 1) * RATE as usize);
+    }
+
+    #[test]
+    fn non_finite_onsets_are_dropped() {
+        assert!(typewriter_track(&cfg(), &[f64::NAN, f64::INFINITY]).is_empty());
     }
 }

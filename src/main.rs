@@ -22,7 +22,7 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use gtk::glib;
 
-use config::{Align, Config, Dir, Reveal, Style, Vanish, MAX_TIMEOUT_MS};
+use config::{Align, Config, Dir, Reveal, Style, Vanish, MAX_LIFETIME_MS};
 use hud::Hud;
 use outputs::OutputSpec;
 
@@ -117,25 +117,42 @@ fn run() -> Result<ExitCode> {
         .map(|d| d.as_nanos() as u64)
         .unwrap_or(0x5bd1_e995);
     let hud = Rc::new(Hud::new(style, text, seed)?);
+    // reveal + hold + vanish, so a tiny --typewriter strands the overlay no
+    // more than a huge --timeout does.
+    let total = hud.timeline.total_ms();
+    anyhow::ensure!(
+        total.is_finite() && total <= MAX_LIFETIME_MS as f64,
+        "the message would stay up for {:.0} s; the maximum is {} s \
+         (check --typewriter, --timeout and --vanish)",
+        total / 1000.0,
+        MAX_LIFETIME_MS / 1000
+    );
 
     // Render the whole blip track before the GUI exists: it depends only on
     // the text and the typing speed, and doing it here keeps the first frame
     // from stalling on synthesis.
     let cfg = &hud.style.sound;
-    let reveal_pcm = sound::typewriter_track(cfg, &hud.timeline.onsets(&hud.text, cfg.every));
+    let reveal_pcm = sound::typewriter_track(cfg, &hud.timeline.onsets(cfg.every));
     // Untype clicks its way back out; every other vanish is silent. It is a
     // separate track played after a delay, rather than one track starting at
     // t0: mixing it in would allocate silence for the whole hold, so
     // `--timeout 3600` would cost a gigabyte of zeroes.
-    let vanish_pcm =
-        sound::typewriter_track(cfg, &hud.timeline.vanish_onsets(&hud.text, cfg.every));
+    let vanish_pcm = sound::typewriter_track(cfg, &hud.timeline.vanish_onsets(cfg.every));
     let vanish_delay = Duration::from_secs_f64(hud.timeline.vanish_start().max(0.0));
     let tracks = RefCell::new(Some((reveal_pcm, vanish_pcm)));
+    // Held so the process can wait for playback instead of killing it on the
+    // way out: the last untype blip starts on the very frame the window
+    // closes, and PulseAudio drops whatever has not been played.
+    let playing: Rc<RefCell<Vec<std::thread::JoinHandle<()>>>> = Rc::new(RefCell::new(Vec::new()));
     // take() makes this fire exactly once no matter how many windows call it.
-    let on_first_frame: Rc<dyn Fn()> = Rc::new(move || {
-        if let Some((reveal, vanish)) = tracks.borrow_mut().take() {
-            sound::play_detached(reveal, Duration::ZERO);
-            sound::play_detached(vanish, vanish_delay);
+    let on_first_frame: Rc<dyn Fn()> = Rc::new({
+        let playing = playing.clone();
+        move || {
+            if let Some((reveal, vanish)) = tracks.borrow_mut().take() {
+                let mut handles = playing.borrow_mut();
+                handles.extend(sound::play_detached(reveal, Duration::ZERO));
+                handles.extend(sound::play_detached(vanish, vanish_delay));
+            }
         }
     });
 
@@ -162,6 +179,9 @@ fn run() -> Result<ExitCode> {
         })?;
     }
     main_loop.run();
+    for handle in playing.borrow_mut().drain(..) {
+        let _ = handle.join();
+    }
     Ok(ExitCode::SUCCESS)
 }
 
@@ -242,7 +262,7 @@ fn apply_overrides(style: &mut Style, cli: &Cli) -> Result<()> {
         // An upper bound as well as a lower one: the value comes from argv,
         // and there is no way to dismiss a HUD early, so a fat-fingered
         // exponent would pin it to the screen for years.
-        let max_s = MAX_TIMEOUT_MS as f64 / 1000.0;
+        let max_s = MAX_LIFETIME_MS as f64 / 1000.0;
         anyhow::ensure!(
             (0.0..=max_s).contains(&t),
             "--timeout must be between 0 and {max_s} seconds"
@@ -302,8 +322,15 @@ fn parse_vanish(spec: &str, fallback_ms: u64) -> Result<Vanish> {
             m.parse::<u64>()
                 .with_context(|| format!("bad duration {m:?} in --vanish"))?,
         ),
-        None => (spec, fallback_ms.max(1)),
+        // An instant preset has no duration to keep, so fall back to the
+        // compiled default rather than to a 1 ms flicker.
+        None if fallback_ms == 0 => (spec, config::DEFAULT_VANISH_MS),
+        None => (spec, fallback_ms),
     };
+    anyhow::ensure!(
+        ms <= MAX_LIFETIME_MS,
+        "--vanish duration must be at most {MAX_LIFETIME_MS} ms"
+    );
     Ok(match kind {
         "instant" | "none" => Vanish::Instant,
         "fade" => Vanish::Fade { ms },
@@ -474,6 +501,29 @@ mod tests {
         let cli = Cli::parse_from(["wayhud", "x", "--outline", "none"]);
         apply_overrides(&mut s, &cli).unwrap();
         assert!(s.outline.is_none());
+    }
+
+    #[test]
+    fn vanish_falls_back_to_the_compiled_duration_over_an_instant_preset() {
+        // fallback_ms.max(1) used to turn "no duration to inherit" into a 1 ms
+        // animation nobody could see.
+        let mut s = Style {
+            vanish: Vanish::Instant,
+            ..Style::default()
+        };
+        let cli = Cli::parse_from(["wayhud", "x", "--vanish", "fade"]);
+        apply_overrides(&mut s, &cli).unwrap();
+        assert_eq!(
+            s.vanish,
+            Vanish::Fade {
+                ms: config::DEFAULT_VANISH_MS
+            }
+        );
+    }
+
+    #[test]
+    fn an_absurd_vanish_duration_is_rejected_on_the_cli() {
+        assert!(parse_vanish("fade:99999999999999", 400).is_err());
     }
 
     #[test]

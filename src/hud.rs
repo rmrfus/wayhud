@@ -36,11 +36,14 @@ impl Hud {
     pub fn new(style: Style, text: String, seed: u64) -> Result<Hud> {
         let fill = gdk::RGBA::parse(&style.color)
             .with_context(|| format!("bad color {:?}", style.color))?;
-        let outline = match &style.outline {
+        let outline = match style.outline.as_deref() {
+            // "none" as well as an absent key: TOML has no null, so a preset
+            // inheriting an outline from [style.default] has no other way to
+            // take it back off.
+            None | Some("none") => None,
             Some(c) => {
                 Some(gdk::RGBA::parse(c).with_context(|| format!("bad outline color {c:?}"))?)
             }
-            None => None,
         };
         let font = pango::FontDescription::from_string(&style.font);
         // from_string never fails — it just yields an empty family that
@@ -64,10 +67,23 @@ impl Hud {
         })
     }
 
-    /// Padding around the text box: the stroke straddles the glyph outline, and
-    /// the caret sits past the last character.
+    /// Padding around the text box.
+    ///
+    /// Covers the stroke, which straddles the glyph outline, and the caret,
+    /// which is drawn PAST the last character: `index_to_pos` reports zero
+    /// width there, so `draw` falls back to half the line height. A fixed 8px
+    /// was never enough for that — at 72pt the caret is about 45px wide and
+    /// was clipped to a sliver whenever the last line was also the longest.
     fn pad(&self) -> f64 {
-        self.outline_width.max(0.0).ceil() + 8.0
+        let stroke = self.outline_width.max(0.0).ceil();
+        let caret = if matches!(self.style.reveal, Reveal::Typewriter { cursor: true, .. }) {
+            // Upper bound on the fallback caret: half a line height, and a
+            // line is not taller than about 1.4x the point size.
+            font_points(&self.font) * 0.7
+        } else {
+            0.0
+        };
+        stroke + caret.ceil() + 8.0
     }
 
     /// `max_width` is the widest the text block may get, in logical pixels.
@@ -98,19 +114,26 @@ fn outline_width(font: &pango::FontDescription, configured: Option<f64>) -> f64 
     if let Some(w) = configured {
         return w.max(0.0);
     }
-    let size = font.size();
-    if size <= 0 {
+    match font_points(font) {
         // No size in the description at all; pango will pick its own default,
         // so there is nothing to scale against.
-        return 1.0;
+        p if p <= 0.0 => 1.0,
+        p => (p / 14.0).max(0.5),
+    }
+}
+
+/// Font size in points, 0.0 when the description does not carry one.
+fn font_points(font: &pango::FontDescription) -> f64 {
+    let size = font.size();
+    if size <= 0 {
+        return 0.0;
     }
     // An absolute size is already in device units rather than points.
-    let points = if font.is_size_absolute() {
+    if font.is_size_absolute() {
         size as f64 / pango::SCALE as f64 * 72.0 / 96.0
     } else {
         size as f64 / pango::SCALE as f64
-    };
-    (points / 14.0).max(0.5)
+    }
 }
 
 /// Wrap the layout to `max_width`, then shrink its width to what the text
@@ -141,7 +164,6 @@ fn fit_width(layout: &pango::Layout, max_width: i32) {
 struct Frame {
     t0: Cell<Option<i64>>,
     phase: Cell<Phase>,
-    t_ms: Cell<f64>,
     blink: Cell<bool>,
 }
 
@@ -193,7 +215,6 @@ pub fn present(
     let frame = Rc::new(Frame {
         t0: Cell::new(None),
         phase: Cell::new(Phase::Reveal { chars: 0 }),
-        t_ms: Cell::new(0.0),
         blink: Cell::new(false),
     });
 
@@ -227,7 +248,6 @@ pub fn present(
             let blink = show_caret(&hud.style.reveal, &hud.style.vanish, phase, t_ms);
             let changed = phase != frame.phase.get() || blink != frame.blink.get();
             frame.phase.set(phase);
-            frame.t_ms.set(t_ms);
             frame.blink.set(blink);
             if changed {
                 area.queue_draw();
@@ -320,7 +340,7 @@ fn draw(cr: &gtk::cairo::Context, hud: &Hud, layout: &pango::Layout, phase: Phas
     // Untype isn't a paint effect: it runs the reveal backwards, so it edits
     // the visible-character count and everything downstream just follows.
     if vanish_p > 0.0 && hud.style.vanish.is_untype() {
-        visible = ((1.0 - vanish_p) * total as f64).ceil() as usize;
+        visible = hud.timeline.untype_visible(vanish_p);
     }
 
     let _ = cr.save();
@@ -337,10 +357,13 @@ fn draw(cr: &gtk::cairo::Context, hud: &Hud, layout: &pango::Layout, phase: Phas
                 // wider, wash to white, then blink out over the last 15%.
                 let sy = (1.0 - vanish_p).powf(1.8).max(0.002);
                 let sx = 1.0 + 0.06 * vanish_p;
-                let mid = th / 2.0;
-                cr.translate(0.0, mid);
+                // About the centre on both axes: scaling from x=0 pushed the
+                // right edge out of the surface and clipped it.
+                let (tw, _) = layout.pixel_size();
+                let (cx, cy) = (tw as f64 / 2.0, th / 2.0);
+                cr.translate(cx, cy);
                 cr.scale(sx, sy);
-                cr.translate(0.0, -mid);
+                cr.translate(-cx, -cy);
                 whiten = vanish_p * 0.8;
                 alpha = if vanish_p < 0.85 {
                     1.0
@@ -414,8 +437,12 @@ fn paint_text(
         let caret = caret_rect(layout, &hud.text, visible);
         let (w, _) = layout.pixel_size();
         // Everything above the caret's line, plus the typed part of that line.
+        // The slack on the right is the stroke, not `pad`: pad also reserves
+        // caret room, and using it here would reveal the leading edge of the
+        // next glyph before it has been "typed".
+        let slack = hud.outline_width.max(1.0);
         cr.rectangle(-pad, -pad, w as f64 + pad * 2.0, caret.y + pad);
-        cr.rectangle(-pad, caret.y, caret.x + pad, caret.h);
+        cr.rectangle(-pad, caret.y, caret.x + slack, caret.h);
         cr.clip();
     }
 
@@ -638,10 +665,22 @@ mod tests {
     fn a_line_too_long_for_the_budget_still_wraps() {
         // Shrinking the width must not undo the wrapping it was set for.
         let long = "wraps ".repeat(80);
+        // Line count with the budget alone, before the width is shrunk back.
+        let reference = bare_layout(&long, "Sans 36");
+        reference.set_alignment(pango::Alignment::Center);
+        reference.set_width(600 * pango::SCALE);
+        reference.set_wrap(pango::WrapMode::WordChar);
+        let expected = reference.line_count();
+
         let layout = bare_layout(&long, "Sans 36");
         layout.set_alignment(pango::Alignment::Center);
         fit_width(&layout, 600);
         assert!(layout.line_count() > 1, "text did not wrap");
+        assert_eq!(
+            layout.line_count(),
+            expected,
+            "shrinking the width re-flowed the text"
+        );
         let (text_width, _) = layout.pixel_size();
         assert!(
             text_width <= 600,
@@ -679,6 +718,49 @@ mod tests {
         assert!(show_caret(&TW, &FADE, Phase::Hold, 0.0));
         assert!(!show_caret(&TW, &FADE, Phase::Hold, 600.0));
         assert!(show_caret(&TW, &FADE, Phase::Hold, 1100.0));
+    }
+
+    #[test]
+    fn padding_leaves_room_for_the_caret_past_the_last_character() {
+        // The caret drawn past the end falls back to half the line height;
+        // padding sized only for the stroke clipped it to a sliver.
+        let style = Style {
+            font: "Sans 72".into(),
+            reveal: TW,
+            ..Style::default()
+        };
+        let hud = Hud::new(style, "text".into(), 1).unwrap();
+        let caret_fallback = 72.0 * 1.4 / 2.0;
+        assert!(
+            hud.pad() >= caret_fallback,
+            "pad {} does not cover a {caret_fallback}px caret",
+            hud.pad()
+        );
+    }
+
+    #[test]
+    fn no_caret_means_no_caret_padding() {
+        let style = Style {
+            font: "Sans 72".into(),
+            reveal: Reveal::Instant,
+            ..Style::default()
+        };
+        let hud = Hud::new(style, "text".into(), 1).unwrap();
+        assert!(
+            hud.pad() < 30.0,
+            "instant reveal should not reserve caret room"
+        );
+    }
+
+    #[test]
+    fn outline_none_switches_the_stroke_off() {
+        // TOML has no null, so a preset inheriting an outline needs a value
+        // that means "no outline".
+        let style = Style {
+            outline: Some("none".into()),
+            ..Style::default()
+        };
+        assert!(Hud::new(style, "x".into(), 1).unwrap().outline.is_none());
     }
 
     #[test]

@@ -54,6 +54,13 @@ pub struct Timeline {
     reveal_ms: f64,
     hold_ms: f64,
     vanish_ms: f64,
+    /// Which characters are worth a blip: whitespace never clicks, and a
+    /// space bar on a movie terminal does not either.
+    ///
+    /// Kept here rather than re-derived from the text on every call, so a
+    /// caller cannot hand `onsets` a different string from the one the
+    /// timeline was built for.
+    audible: Vec<bool>,
     /// Untype erases character by character, so it gets blips of its own.
     untype: bool,
 }
@@ -92,6 +99,7 @@ impl Timeline {
         Timeline {
             reveal_ms: steps.last().copied().unwrap_or(0.0),
             steps,
+            audible: text.chars().map(|c| !c.is_whitespace()).collect(),
             chars,
             hold_ms: timeout_ms as f64,
             vanish_ms: vanish.ms() as f64,
@@ -103,9 +111,9 @@ impl Timeline {
         if t_ms < self.reveal_ms {
             // A character is visible once its own moment has passed. The
             // steps ascend, so this is a partition point.
-            let n = self.steps.partition_point(|&s| s <= t_ms);
+            // partition_point cannot exceed the slice length, which is chars.
             return Phase::Reveal {
-                chars: n.min(self.chars),
+                chars: self.steps.partition_point(|&s| s <= t_ms),
             };
         }
         let t = t_ms - self.reveal_ms;
@@ -125,18 +133,24 @@ impl Timeline {
     ///
     /// Whitespace is skipped: a space key on a movie terminal doesn't click,
     /// and blipping on newlines sounds like a stutter.
-    pub fn onsets(&self, text: &str, every: usize) -> Vec<f64> {
+    pub fn onsets(&self, every: usize) -> Vec<f64> {
         if self.steps.is_empty() {
             return Vec::new();
         }
         let every = every.max(1);
-        text.chars()
-            .enumerate()
-            .filter(|(i, c)| !c.is_whitespace() && i.is_multiple_of(every))
+        self.blip_indices(every)
             // The same moment the character appears on screen — one source of
             // truth, so jitter cannot desynchronise sound from animation.
-            .filter_map(|(i, _)| self.steps.get(i).map(|ms| ms / 1000.0))
+            .filter_map(|i| self.steps.get(i).map(|ms| ms / 1000.0))
             .collect()
+    }
+
+    fn blip_indices(&self, every: usize) -> impl Iterator<Item = usize> + '_ {
+        self.audible
+            .iter()
+            .enumerate()
+            .filter(move |(i, audible)| **audible && i.is_multiple_of(every))
+            .map(|(i, _)| i)
     }
 
     /// Blips for an untype vanish, in seconds from the START OF THE VANISH —
@@ -144,25 +158,36 @@ impl Timeline {
     /// a long hold never turns into allocated silence.
     ///
     /// Empty for every other mode: nothing is being struck, so nothing clicks.
-    pub fn vanish_onsets(&self, text: &str, every: usize) -> Vec<f64> {
+    pub fn vanish_onsets(&self, every: usize) -> Vec<f64> {
         if !self.untype || self.vanish_ms <= 0.0 || self.chars == 0 {
             return Vec::new();
         }
         // The erase runs at a steady rate: it is a machine undoing the text,
         // not a person typing it.
-        let every = every.max(1);
         let step = self.vanish_ms / self.chars as f64 / 1000.0;
-        text.chars()
-            .enumerate()
-            .filter(|(i, c)| !c.is_whitespace() && i.is_multiple_of(every))
+        self.blip_indices(every.max(1))
             // Erased from the end: the last character goes first.
-            .map(|(i, _)| (self.chars - i) as f64 * step)
+            .map(|i| (self.chars - i) as f64 * step)
             .collect()
     }
 
     /// When the vanish begins, in seconds from t0.
     pub fn vanish_start(&self) -> f64 {
         (self.reveal_ms + self.hold_ms) / 1000.0
+    }
+
+    /// How many characters are still on screen `p` through an untype vanish.
+    ///
+    /// Lives here, next to `vanish_onsets`, because the two have to agree:
+    /// the blip for character `i` must sound on the frame the count falls to
+    /// `i`. Kept apart they matched only by arithmetic coincidence.
+    pub fn untype_visible(&self, p: f64) -> usize {
+        (((1.0 - p) * self.chars as f64).ceil() as usize).min(self.chars)
+    }
+
+    /// Everything from t0 to the frame the window closes.
+    pub fn total_ms(&self) -> f64 {
+        self.reveal_ms + self.hold_ms + self.vanish_ms
     }
 
     pub fn chars(&self) -> usize {
@@ -241,12 +266,12 @@ mod tests {
     fn onsets_skip_whitespace_and_respect_every() {
         let tl = timeline("ab cd", &tw(10.0), 0, &Vanish::Instant);
         // step = 100 ms; chars a,b,' ',c,d at indices 0..4, space dropped.
-        let all = tl.onsets("ab cd", 1);
+        let all = tl.onsets(1);
         assert_eq!(all.len(), 4);
         assert!((all[0] - 0.1).abs() < 1e-9);
         assert!((all[3] - 0.5).abs() < 1e-9);
         // every=2 keeps indices 0,2,4 -> minus the space at 2 -> 0 and 4.
-        assert_eq!(tl.onsets("ab cd", 2).len(), 2);
+        assert_eq!(tl.onsets(2).len(), 2);
     }
 
     #[test]
@@ -254,7 +279,7 @@ mod tests {
         let tl = timeline("abcd", &tw(10.0), 1000, &Vanish::Untype { ms: 400 });
         // reveal 400 ms + hold 1000 ms.
         assert!((tl.vanish_start() - 1.4).abs() < 1e-9);
-        let on = tl.vanish_onsets("abcd", 1);
+        let on = tl.vanish_onsets(1);
         assert_eq!(on.len(), 4);
         // Char 3 (the last) is erased first, char 0 last.
         assert!(on[3] < on[0], "erase order must be reversed: {on:?}");
@@ -268,7 +293,24 @@ mod tests {
         // The bug this guards: onsets measured from t0 made typewriter_track
         // allocate silence for the whole timeout — an hour was a gigabyte.
         let tl = timeline("ab", &tw(10.0), 3_600_000, &Vanish::Untype { ms: 200 });
-        assert!(tl.vanish_onsets("ab", 1).iter().all(|&t| t <= 0.2));
+        assert!(tl.vanish_onsets(1).iter().all(|&t| t <= 0.2));
+    }
+
+    #[test]
+    fn an_untype_blip_lands_when_its_character_disappears() {
+        // Ties the sound to the picture: character i is erased exactly as the
+        // visible count drops to i.
+        let tl = timeline("abcdef", &tw(10.0), 0, &Vanish::Untype { ms: 600 });
+        let onsets = tl.vanish_onsets(1);
+        for (i, t) in onsets.iter().enumerate() {
+            let p = t * 1000.0 / 600.0;
+            assert_eq!(
+                tl.untype_visible(p),
+                i,
+                "blip {i} at p={p} leaves {} visible",
+                tl.untype_visible(p)
+            );
+        }
     }
 
     #[test]
@@ -284,10 +326,7 @@ mod tests {
             Vanish::Instant,
         ] {
             let tl = timeline("abcd", &tw(10.0), 100, &v);
-            assert!(
-                tl.vanish_onsets("abcd", 1).is_empty(),
-                "{v:?} should be silent"
-            );
+            assert!(tl.vanish_onsets(1).is_empty(), "{v:?} should be silent");
         }
     }
 
@@ -362,7 +401,7 @@ mod tests {
         // The reason steps are materialised: with jitter, a second formula
         // for the blip times would drift away from what is on screen.
         let tl = timeline("abcd", &tw_jitter(10.0, 0.5), 0, &Vanish::Instant);
-        let onsets = tl.onsets("abcd", 1);
+        let onsets = tl.onsets(1);
         assert_eq!(onsets.len(), 4);
         for (i, t) in onsets.iter().enumerate() {
             assert!(
@@ -376,6 +415,6 @@ mod tests {
     #[test]
     fn instant_reveal_has_no_onsets() {
         let tl = timeline("abc", &Reveal::Instant, 0, &Vanish::Instant);
-        assert!(tl.onsets("abc", 1).is_empty());
+        assert!(tl.onsets(1).is_empty());
     }
 }

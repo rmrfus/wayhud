@@ -6,8 +6,8 @@
 
 use std::f64::consts::PI;
 
-/// Validated synthesis parameters. Built by `main` from the CLI; ranges are
-/// already checked by the time this reaches the synth.
+/// Synthesis parameters. Ranges are checked by `Style::validate` before this
+/// is built — `decay_ms` in particular sizes the sample buffer.
 #[derive(Debug, Clone)]
 pub struct Params {
     pub freq: f64,       // base frequency, Hz
@@ -26,9 +26,9 @@ pub struct Partial {
     pub weight: f64,
 }
 
-/// Cluster + octave calibration from `bell.oga` (see PLAN.md). The cluster
-/// ratios are relative to the base freq; weights are the measured full-signal
-/// amplitudes. Note the loudest partial is the *bottom* of the cluster (the
+/// Cluster + octave calibration measured from a real bell sample in blyamk.
+/// The cluster ratios are relative to the base freq; weights are the measured
+/// full-signal amplitudes. Note the loudest partial is the *bottom* of the cluster (the
 /// bell "hum"), not the base — the base is only the reference the octave
 /// overtone doubles.
 const CLUSTER: [(f64, f64); 4] = [
@@ -67,7 +67,7 @@ pub fn partials(p: &Params) -> Vec<Partial> {
 }
 
 /// Envelope + timing, all derived from attack/decay. `fade` is defined off the
-/// body first so there is no self-reference (PLAN.md envelope section).
+/// body first so there is no self-reference.
 struct Envelope {
     attack: f64, // s
     tau: f64,    // s, exp decay time-constant (internal)

@@ -24,7 +24,10 @@ keyboard events \- whatever is underneath stays usable.
 .I TEXT
 is taken from the command line; if it is omitted or given as
 .BR - ,
-the message is read from standard input instead. In a command\-line
+the message is read from standard input instead. Piped input is read to end
+of file before anything is drawn, so a stream that never ends \- 
+.B journalctl \-f
+and the like \- will never display. In a command\-line
 argument the escapes
 .BR \en ,
 .B \et
@@ -51,16 +54,29 @@ Default:
 .IP
 .B current
 queries sway over its IPC socket, because Wayland gives a client no way to
-learn which output is focused. Without
-.B SWAYSOCK
-it fails rather than guessing. A named output that does not exist is
+learn which output is focused. The socket is located the way
+.BR swaymsg (1)
+does it:
+.BR I3SOCK ,
+then
+.BR SWAYSOCK ,
+then asking
+.B i3
+or
+.B sway
+for its path. If none of those work it fails rather than guessing. A named output that does not exist is
 reported and skipped; if nothing matches at all, that is an error.
 .TP
 .BR \-t ", " \-\-timeout " \fISECONDS\fR"
 How long the fully revealed text stays up. Measured from the
 .I end
 of the reveal, not from start\-up, so a slow typewriter does not eat into
-the reading time. Default: 5.
+the reading time. Defaults to the selected preset's
+.BR timeout_ms ,
+which is 5 seconds unless the config says otherwise.
+.IP
+The whole lifetime \- reveal plus hold plus vanish \- is capped at one hour,
+since nothing can dismiss a HUD early.
 .TP
 .BR \-s ", " \-\-style " \fINAME\fR"
 Style preset from the config file. Default:
@@ -120,16 +136,16 @@ it is an error rather than a silently ignored flag.
 Exit animation, one of:
 .RS
 .TP
-.B instant
+.BR instant " (alias: " none )
 Gone on the frame the hold expires.
 .TP
 .B fade
 Alpha to zero.
 .TP
-.B collapse
+.BR collapse " (alias: " crt )
 CRT power\-off: squashes to a bright line, blooms wider, blinks out.
 .TP
-.B wash\-down
+.BR wash\-down " (alias: " wash )
 A soft edge sweeps top to bottom, erasing as it passes.
 .TP
 .B wash\-up
@@ -235,8 +251,7 @@ display.
 .SH SEE ALSO
 .BR wayhud (5),
 .BR sway (1),
-.BR swaymsg (1),
-.BR pango-markup (7)
+.BR swaymsg (1)
 .SH AUTHORS
 Written by rmrfus. Source and issues at
 .UR https://github.com/rmrfus/wayhud

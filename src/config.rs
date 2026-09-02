@@ -22,8 +22,12 @@ use serde::Deserialize;
 
 /// One hour. Long enough for anything a heads-up message is for, short enough
 /// that a typo cannot strand the overlay on screen — there is no way to
-/// dismiss one early. Applies to the config as well as to `--timeout`.
-pub const MAX_TIMEOUT_MS: u64 = 3_600_000;
+/// dismiss one early.
+///
+/// Bounds the WHOLE lifetime (reveal + hold + vanish), not just the hold:
+/// `--typewriter 0.01` or `--vanish fade:99999999999999` strand the overlay
+/// exactly as well as a huge `--timeout` does.
+pub const MAX_LIFETIME_MS: u64 = 3_600_000;
 
 /// Where a block of text sits along one axis. Maps onto layer-shell anchors:
 /// `Center` means "anchor neither edge", which the compositor centres for us.
@@ -207,23 +211,51 @@ impl Style {
     /// reason to refuse to show a message.
     fn validate(&self) -> Result<()> {
         anyhow::ensure!(
-            self.timeout_ms <= MAX_TIMEOUT_MS,
-            "timeout_ms is {} but the maximum is {MAX_TIMEOUT_MS}",
+            self.timeout_ms <= MAX_LIFETIME_MS,
+            "timeout_ms is {} but the maximum is {MAX_LIFETIME_MS}",
             self.timeout_ms
         );
         if let Some(w) = self.outline_width {
             anyhow::ensure!(w >= 0.0, "outline_width must not be negative, got {w}");
         }
-        if let Reveal::Typewriter { jitter, .. } = self.reveal {
+        if let Reveal::Typewriter { jitter, cps, .. } = self.reveal {
             anyhow::ensure!(
                 (0.0..=1.0).contains(&jitter),
                 "reveal.jitter must be between 0 and 1, got {jitter}"
             );
+            // NaN passes every comparison below and would make the whole
+            // timeline NaN, closing the window on the first frame.
+            anyhow::ensure!(cps.is_finite(), "reveal.cps must be a finite number");
         }
+        anyhow::ensure!(
+            self.vanish.ms() <= MAX_LIFETIME_MS,
+            "vanish ms is {} but the maximum is {MAX_LIFETIME_MS}",
+            self.vanish.ms()
+        );
         anyhow::ensure!(
             self.sound.every >= 1,
             "sound.every must be at least 1, got {}",
             self.sound.every
+        );
+        // The synth allocates its buffer from decay_ms, so an unchecked value
+        // is an out-of-memory abort before a single sample is mixed: 1e9 asks
+        // for 384 GB. Ranges match blyamk's, which is where these knobs and
+        // their calibration come from.
+        let sound = &self.sound;
+        anyhow::ensure!(
+            (100.0..=8000.0).contains(&sound.freq),
+            "sound.freq must be between 100 and 8000 Hz, got {}",
+            sound.freq
+        );
+        anyhow::ensure!(
+            (10.0..=3000.0).contains(&sound.decay_ms),
+            "sound.decay_ms must be between 10 and 3000, got {}",
+            sound.decay_ms
+        );
+        anyhow::ensure!(
+            (0.0..=1.0).contains(&sound.gain),
+            "sound.gain must be between 0 and 1, got {}",
+            sound.gain
         );
         Ok(())
     }
@@ -288,9 +320,13 @@ impl Config {
         // a misspelt key in a preset nobody asked for today is still a typo,
         // and reporting it at load time is the whole point of
         // deny_unknown_fields. Range checks stay per-preset — see `style`.
-        for (name, table) in &config.style {
-            table
-                .clone()
+        //
+        // Check the MERGED table, not the raw one: a preset that inherits its
+        // `kind` from the base has no `kind` of its own, and the tagged enums
+        // would be rejected for a field the merge was about to supply.
+        for name in config.style.keys() {
+            config
+                .merged(name)
                 .try_into::<Style>()
                 .with_context(|| format!("in [style.{name}] of {}", path.display()))?;
         }
@@ -299,6 +335,17 @@ impl Config {
 
     /// Look up a preset. An unknown name is an error, not a silent default:
     /// `--style alret` should say so rather than render the wrong thing.
+    /// A preset's keys overlaid on the base's, before defaults are filled in.
+    fn merged(&self, name: &str) -> toml::Table {
+        let mut merged = self.style.get(BASE).cloned().unwrap_or_default();
+        if name != BASE {
+            if let Some(preset) = self.style.get(name) {
+                merge_into(&mut merged, preset);
+            }
+        }
+        merged
+    }
+
     /// Resolve a preset: its own keys over `[style.default]`'s, over the
     /// compiled-in defaults.
     ///
@@ -308,13 +355,8 @@ impl Config {
         if name != BASE && !self.style.contains_key(name) {
             anyhow::bail!("no [style.{name}] in the config");
         }
-        let mut merged = self.style.get(BASE).cloned().unwrap_or_default();
-        if name != BASE {
-            if let Some(preset) = self.style.get(name) {
-                merge_into(&mut merged, preset);
-            }
-        }
-        let style: Style = merged
+        let style: Style = self
+            .merged(name)
             .try_into()
             .with_context(|| format!("in [style.{name}]"))?;
         style
@@ -337,8 +379,12 @@ fn d_cps() -> f64 {
 fn d_true() -> bool {
     true
 }
+/// The compiled-in vanish duration, also used as the fallback when a preset
+/// has no duration of its own to carry over.
+pub const DEFAULT_VANISH_MS: u64 = 420;
+
 fn d_vanish_ms() -> u64 {
-    420
+    DEFAULT_VANISH_MS
 }
 fn d_dir() -> Dir {
     Dir::Down
@@ -431,16 +477,64 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_typo_in_any_preset_is_caught_at_load_not_at_use() {
-        let dir = std::env::temp_dir().join(format!("wayhud-cfg-{}", std::process::id()));
+    /// Write a config to a scratch file and load it the way the binary does.
+    fn load_from_text(text: &str, tag: &str) -> Result<Config> {
+        let dir = std::env::temp_dir().join(format!("wayhud-{tag}-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("config.toml");
-        std::fs::write(&path, "[style.unused]\ncolour = \"#fff\"\n").unwrap();
-        let err = Config::load(Some(path.clone())).unwrap_err();
+        std::fs::write(&path, text).unwrap();
+        let result = Config::load(Some(path));
+        std::fs::remove_dir_all(&dir).ok();
+        result
+    }
+
+    #[test]
+    fn a_preset_inheriting_its_kind_survives_load() {
+        // The load-time type check runs before the merge unless it is careful:
+        // `vanish = { ms = 250 }` has no `kind` of its own, and rejecting it
+        // there made the whole file unloadable — including presets that were
+        // perfectly fine.
+        let cfg = load_from_text(
+            "[style.default]\nvanish = { kind = \"wash\", ms = 700, dir = \"up\" }\n\
+             [style.faster]\nvanish = { ms = 250 }\n",
+            "inherit-kind",
+        )
+        .expect("config with an inherited kind must load");
+        assert_eq!(
+            cfg.style("faster").unwrap().vanish,
+            Vanish::Wash {
+                ms: 250,
+                dir: Dir::Up
+            }
+        );
+        assert_eq!(
+            cfg.style("default").unwrap().vanish,
+            Vanish::Wash {
+                ms: 700,
+                dir: Dir::Up
+            }
+        );
+    }
+
+    #[test]
+    fn a_reveal_inheriting_its_kind_survives_load_too() {
+        let cfg = load_from_text(
+            "[style.default]\nreveal = { kind = \"typewriter\", cps = 12 }\n\
+             [style.fast]\nreveal = { cps = 40 }\n",
+            "inherit-reveal",
+        )
+        .expect("config with an inherited reveal kind must load");
+        assert!(matches!(
+            cfg.style("fast").unwrap().reveal,
+            Reveal::Typewriter { cps, .. } if cps == 40.0
+        ));
+    }
+
+    #[test]
+    fn a_typo_in_any_preset_is_caught_at_load_not_at_use() {
+        let err = load_from_text("[style.unused]\ncolour = \"#fff\"\n", "typo").unwrap_err();
         let msg = format!("{err:#}");
         assert!(msg.contains("style.unused"), "unhelpful error: {msg}");
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
@@ -480,6 +574,37 @@ mod tests {
         let s = c.style("a").unwrap();
         assert!(matches!(s.reveal, Reveal::Instant));
         assert!(matches!(s.vanish, Vanish::Fade { ms: 100 }));
+    }
+
+    #[test]
+    fn sound_knobs_are_range_checked() {
+        // decay_ms sizes the synth buffer; 1e9 aborted the process.
+        for bad in [
+            "sound = { decay_ms = 1e9 }",
+            "sound = { freq = 0.0 }",
+            "sound = { gain = 40.0 }",
+        ] {
+            let c: Config = toml::from_str(&format!("[style.a]\n{bad}\n")).unwrap();
+            assert!(c.style("a").is_err(), "{bad} should be rejected");
+        }
+        let c: Config =
+            toml::from_str("[style.a]\nsound = { freq = 1200.0, decay_ms = 60.0 }\n").unwrap();
+        assert!(c.style("a").is_ok());
+    }
+
+    #[test]
+    fn a_non_finite_cps_is_rejected() {
+        let c: Config =
+            toml::from_str("[style.a]\nreveal = { kind = \"typewriter\", cps = nan }\n").unwrap();
+        assert!(c.style("a").is_err());
+    }
+
+    #[test]
+    fn an_absurd_vanish_duration_is_rejected() {
+        let c: Config =
+            toml::from_str("[style.a]\nvanish = { kind = \"fade\", ms = 99999999999999 }\n")
+                .unwrap();
+        assert!(c.style("a").is_err());
     }
 
     #[test]

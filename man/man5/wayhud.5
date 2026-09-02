@@ -58,6 +58,8 @@ or a named colour such as
 A Pango font description \- family, optional style words, then size in
 points, e.g.
 .BR "\(dqLythMono Nerd Font 72\(dq" .
+Note that the message itself is plain text: Pango markup in it is not
+interpreted.
 The family must match fontconfig exactly; one that does not exist falls back
 to the default font without a word of warning.
 .TP
@@ -90,8 +92,14 @@ Fill colour of the glyphs.
 default
 .BR \(dq#1d2021\(dq )
 .br
-Colour of the stroke around each glyph. Omit the key entirely to draw the
-text flat, with no outline pass at all.
+Colour of the stroke around each glyph. Omit the key, or set it to
+.BR \(dqnone\(dq ,
+to draw the text flat with no outline pass. A preset inheriting an outline
+from
+.B [style.default]
+needs the explicit
+.B \(dqnone\(dq
+\- TOML has no null to remove an inherited key with.
 .TP
 .B outline_width
 .RI ( float ,
@@ -153,8 +161,15 @@ milliseconds; default
 How long the fully revealed text stays up. Measured from the
 .I end
 of the reveal, not from start\-up, so a slow typewriter does not eat into
-the reading time. Capped at 3600000 (one hour): there is no way to dismiss a
-HUD early, so an accidental extra digit would strand it on screen.
+the reading time.
+.IP
+The whole lifetime \- reveal plus hold plus vanish \- is capped at 3600000 ms
+(one hour), and the message is refused if it would exceed that: there is no
+way to dismiss a HUD early, so an accidental extra digit, a tiny
+.B cps
+or a huge vanish
+.B ms
+would all strand it on screen.
 .TP
 .B reveal
 .RI ( table ,
@@ -268,16 +283,17 @@ Whether to make any noise at all.
 overrides this to false.
 .TP
 .B freq
-(float, Hz; default
+(float, 100\(en8000 Hz; default
 .BR 2100.0 )
 .br
 Base frequency of the blip \- its overall pitch.
 .TP
 .B decay_ms
-(float, milliseconds; default
+(float, 10\(en3000 milliseconds; default
 .BR 38.0 )
 .br
-Ring\-out time. Longer values turn a click into a tone.
+Ring\-out time. Longer values turn a click into a tone. The range is
+enforced because this figure sizes the synthesis buffer.
 .TP
 .B gain
 (float, 0\(en1; default
@@ -339,5 +355,4 @@ sound = { enabled = false }
 .fi
 .RE
 .SH SEE ALSO
-.BR wayhud (1),
-.BR pango-markup (7)
+.BR wayhud (1)

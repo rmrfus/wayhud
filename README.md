@@ -21,8 +21,11 @@ keystroke from whatever is underneath.
 wayhud "SYSTEM ONLINE"
 wayhud -o all -t 10 --position top "BUILD FAILED"
 wayhud --vanish untype:900 "THIS MESSAGE WILL SELF DESTRUCT"
-journalctl -f -u nginx | wayhud --typewriter 0 --color '#fb4934'
+journalctl -n 3 -u nginx | wayhud --typewriter 0 --color '#fb4934'
 ```
+
+Piped input is read to EOF before anything is shown, so a stream that never
+ends (`journalctl -f`, `tail -f`) will never display.
 
 ## Install
 
@@ -64,22 +67,22 @@ install -Dm644 man/man1/wayhud.1 ~/.local/share/man/man1/wayhud.1
 See `man 1 wayhud` for the full reference, and `man 5 wayhud` for the config
 file format.
 
-| Flag             | Default   | Meaning                                                  |
-| ---------------- | --------- | -------------------------------------------------------- |
-| `TEXT`           | —         | Message. Omit or pass `-` to read stdin.                  |
-| `-o, --output`   | `current` | `current`, `all`, or `DP-3,eDP-1`                         |
-| `-t, --timeout`  | `5`       | Hold in seconds, counted from the END of the reveal       |
-| `-s, --style`    | `default` | Preset from the config file                               |
-| `--font`         | —         | Pango description, e.g. `"LythMono Nerd Font 72"`         |
-| `--color`        | —         | Any CSS colour GTK parses                                 |
-| `--outline`      | —         | Outline colour, or `none` for flat glyphs                 |
-| `--position`     | —         | `center`, `top`, `bottom-right`, …                        |
-| `--typewriter`   | —         | Characters/second; `0` reveals instantly                  |
-| `--jitter`       | —         | Stagger keystroke gaps by ±this fraction (0–1)             |
-| `--vanish`       | —         | Exit effect, optionally `:MS` — see below                 |
-| `--no-sound`     | —         | Stay quiet regardless of the style                        |
-| `--raw`          | —         | Take the argument literally (no `\n` / `\t` expansion)    |
-| `--config`       | XDG path  | Config file location                                      |
+| Flag            | Default   | Meaning                                                |
+| --------------- | --------- | ------------------------------------------------------ |
+| `TEXT`          | —         | Message. Omit or pass `-` to read stdin.               |
+| `-o, --output`  | `current` | `current`, `all`, or `DP-3,eDP-1`                      |
+| `-t, --timeout` | `5`       | Hold in seconds, counted from the END of the reveal    |
+| `-s, --style`   | `default` | Preset from the config file                            |
+| `--font`        | —         | Pango description, e.g. `"LythMono Nerd Font 72"`      |
+| `--color`       | —         | Any CSS colour GTK parses                              |
+| `--outline`     | —         | Outline colour, or `none` for flat glyphs              |
+| `--position`    | —         | `center`, `top`, `bottom-right`, …                     |
+| `--typewriter`  | —         | Characters/second; `0` reveals instantly               |
+| `--jitter`      | —         | Stagger keystroke gaps by ±this fraction (0–1)         |
+| `--vanish`      | —         | Exit effect, optionally `:MS` — see below              |
+| `--no-sound`    | —         | Stay quiet regardless of the style                     |
+| `--raw`         | —         | Take the argument literally (no `\n` / `\t` expansion) |
+| `--config`      | XDG path  | Config file location                                   |
 
 The hold timeout is measured from the **end** of the reveal, not from start-up,
 so a slow typewriter doesn't eat into the reading time.
@@ -88,8 +91,9 @@ so a slow typewriter doesn't eat into the reading time.
 `sh`, which has no `$'...'`. Text arriving on stdin is used verbatim.
 
 `--output current` asks sway over its IPC socket which output has focus —
-Wayland itself gives a client no way to find that out. Without `SWAYSOCK` it
-fails rather than guessing.
+Wayland itself gives a client no way to find that out. The socket is located
+the way `swaymsg` does it (`I3SOCK`, `SWAYSOCK`, then asking `i3` or `sway`
+for its path); if none of that works, it fails rather than guessing.
 
 ## Vanish effects
 
@@ -97,15 +101,15 @@ fails rather than guessing.
 Without `:MS` the flag keeps whatever duration the preset already had, so you
 can cycle through effects without restating the timing.
 
-| Kind          | What it looks like                                                      |
-| ------------- | ----------------------------------------------------------------------- |
-| `instant`     | Gone on the frame the hold expires.                                      |
-| `fade`        | Alpha to zero.                                                           |
-| `collapse`    | CRT power-off: squashes to a bright line, blooms wider, blinks out.      |
-| `wash-down`   | A soft edge sweeps top to bottom, erasing as it passes.                  |
-| `wash-up`     | The same, bottom to top.                                                 |
-| `untype`      | The caret walks back and eats the text, blipping on the way out.         |
-| `dissolve`    | Falls apart into blocks in a fixed pseudo-random order.                  |
+| Kind        | What it looks like                                                  |
+| ----------- | ------------------------------------------------------------------- |
+| `instant`   | Gone on the frame the hold expires.                                 |
+| `fade`      | Alpha to zero.                                                      |
+| `collapse`  | CRT power-off: squashes to a bright line, blooms wider, blinks out. |
+| `wash-down` | A soft edge sweeps top to bottom, erasing as it passes.             |
+| `wash-up`   | The same, bottom to top.                                            |
+| `untype`    | The caret walks back and eats the text, blipping on the way out.    |
+| `dissolve`  | Falls apart into blocks in a fixed pseudo-random order.             |
 
 `untype` is the only one that makes noise — it is typing, so it clicks. It also
 gets a caret even after an instant reveal, since otherwise characters would
@@ -141,20 +145,20 @@ vanish = { kind = "wash", ms = 300, dir = "up" }
 
 ### Keys
 
-| Key             | Type                          | Default                      | Meaning                                                  |
-| --------------- | ----------------------------- | ---------------------------- | -------------------------------------------------------- |
-| `font`          | Pango description             | `"LythMono Nerd Font 72"`    | Family and size in points                                 |
-| `color`         | CSS colour                    | `"#b8bb26"`                  | Glyph fill                                                |
-| `outline`       | CSS colour                    | `"#1d2021"`                  | Stroke colour; omit the key for no outline                |
-| `outline_width` | float, logical px             | font size / 14               | Stroke width; unset it scales with the font               |
-| `halign`        | `start` `center` `end`        | `center`                     | Horizontal placement on the output                        |
-| `valign`        | `start` `center` `end`        | `center`                     | Vertical placement                                        |
-| `margin`        | int, logical px               | `64`                         | Gap from the anchored edge; ignored on a centred axis      |
-| `line_align`    | `left` `center` `right`       | `left`                       | Alignment of lines inside the block                       |
-| `timeout_ms`    | int, ms (max 3600000)         | `5000`                       | Hold, counted from the END of the reveal                  |
-| `reveal`        | table                         | typewriter, 28 cps, cursor   | How the text appears                                      |
-| `vanish`        | table                         | collapse, 420 ms             | How it goes away                                          |
-| `sound`         | table                         | on, 2100 Hz, gain 0.22       | The typewriter blip                                       |
+| Key             | Type                    | Default                    | Meaning                                               |
+| --------------- | ----------------------- | -------------------------- | ----------------------------------------------------- |
+| `font`          | Pango description       | `"LythMono Nerd Font 72"`  | Family and size in points                             |
+| `color`         | CSS colour              | `"#b8bb26"`                | Glyph fill                                            |
+| `outline`       | CSS colour              | `"#1d2021"`                | Stroke colour; `"none"` or omit for none              |
+| `outline_width` | float, logical px       | font size / 14             | Stroke width; unset it scales with the font           |
+| `halign`        | `start` `center` `end`  | `center`                   | Horizontal placement on the output                    |
+| `valign`        | `start` `center` `end`  | `center`                   | Vertical placement                                    |
+| `margin`        | int, logical px         | `64`                       | Gap from the anchored edge; ignored on a centred axis |
+| `line_align`    | `left` `center` `right` | `left`                     | Alignment of lines inside the block                   |
+| `timeout_ms`    | int, ms (max 3600000)   | `5000`                     | Hold, counted from the END of the reveal              |
+| `reveal`        | table                   | typewriter, 28 cps, cursor | How the text appears                                  |
+| `vanish`        | table                   | collapse, 420 ms           | How it goes away                                      |
+| `sound`         | table                   | on, 2100 Hz, gain 0.22     | The typewriter blip                                   |
 
 `reveal` is `{ kind = "instant" }` or
 `{ kind = "typewriter", cps = F, cursor = BOOL, jitter = F }`. `jitter` (0–1,
