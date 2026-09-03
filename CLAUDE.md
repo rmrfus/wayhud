@@ -93,6 +93,25 @@ carry a broken hunk through.
   at all, growing with the glow radius, which is what finally made it visible
   after months. Same trap on the height: the caret's line needs a radius of
   room below it or the halo is cut flat along the line box.
+- **Three box passes spread THREE times their radius, not one.** Reserving a
+  single radius of room truncates the halo at the surface edge: measured on a
+  block blurred at radius 16 with 16px of margin, the edge still reads 38 of a
+  221 peak, which draws as a hard rectangle around the text and another around
+  the caret. `blur_passes` runs the arithmetic backwards from the reach that
+  was asked for so `radius` keeps meaning how far the light carries.
+- **The blurred mask is built from the REVEALED glyphs, never clipped after
+  the blur.** A rectangle laid over a finished halo leaves a straight edge
+  wherever the mask is still bright at the boundary — measured at a fall of 75
+  from a 77 peak in one pixel, which is the line down the screen at the caret.
+  Clip the ink, then blur.
+- **The caret is one width for the whole message, taken from the font.** It
+  used to be the advance of the glyph it sat on, which is the cell only on a
+  monospaced face: on DejaVu Sans at 72pt it swung from 27px before an `i` to
+  94px before an `m`, resizing every keystroke.
+- **Trailing newlines are trimmed on every input path, not just stdin.** Pango
+  turns one into an empty final line and counts it in the layout height, so the
+  surface is a line taller than the message, the compositor centres the phantom
+  along with it, and the caret finishes parked on the empty line.
 - **Anything that widens the padding is bounded by `MAX_EDGE_PX`.** The
   outline stroke and the glow radius both feed `pad`, and `pad` is subtracted
   from the monitor width to get the wrapping budget; unbounded, either starves
