@@ -4,14 +4,33 @@ A one-shot layer-shell overlay for sway: show text, wait, exit. Rust + GTK4 +
 gtk4-layer-shell, drawn by hand with pango/cairo. Runs on the user's own
 machines (NixOS, sway, three HiDPI outputs).
 
-- build: `nix develop --command cargo build --release`
-- test: `nix develop --command cargo test`
-- lint: `nix develop --command cargo clippy --all-targets -- -D warnings`
+Run these exactly as written — they are what CI and the pre-commit hook run.
+Dropping `--locked` lets cargo update the committed lockfile, at which point
+the build is no longer the one CI checked; `-D warnings` is what turns the
+`[lints.clippy]` table in Cargo.toml from advice into a failure.
 
-Install the hook once per clone: `git config core.hooksPath hooks`.
+- build: `nix develop --command cargo build --release --locked`
+- fmt: `nix develop --command cargo fmt --all --check`
+- lint: `nix develop --command cargo clippy --all-targets --locked -- -D warnings`
+- test: `nix develop --command cargo test --locked`
+- audit: `nix develop --command cargo deny check advisories sources`
+- dead deps: `nix develop --command cargo machete`
+- man pages: `nix develop --command groff -man -Tutf8 -ww -z man/man1/wayhud.1`
+
+Install the hook once per clone: `git config core.hooksPath hooks`. It lints
+the staged tree rather than the working one, so an unstaged fix on disk cannot
+carry a broken hunk through.
 
 ## Layout
 
+- `main.rs` — CLI, the flag-over-preset overrides, and the GTK main loop.
+- `config.rs` — the TOML presets and the resolved `Style`. Presets are held as
+  raw tables so a preset can be merged onto `[style.default]` before serde
+  fills in defaults; deserialising first would make "unset" and "set to the
+  default" indistinguishable.
+- `outputs.rs` — which monitors a message lands on. `current` goes out to sway
+  over IPC, because Wayland gives a client no way to ask which output is
+  focused.
 - `timeline.rs` — the reveal/hold/vanish state machine. Pure milliseconds, no
   GTK; this is where the animation contract is tested.
 - `hud.rs` — one layer-shell window per output, plus the draw callback.

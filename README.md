@@ -148,7 +148,8 @@ disappear with nothing touching them.
 ## Config
 
 `$XDG_CONFIG_HOME/wayhud/config.toml` — or `~/.config/wayhud/config.toml` when
-that variable is unset — is a flat map of named presets picked with `--style`.
+that variable is unset, empty, or not an absolute path — is a flat map of named
+presets picked with `--style`.
 A missing file is fine: every preset is then just the built-in defaults. A
 malformed one, or an unknown key, is an error, so a typo gets reported instead
 of quietly doing nothing.
@@ -252,11 +253,21 @@ reachable, the message still goes up and the failure is reported on stderr.
 ```sh
 nix develop
 cargo fmt --all --check
-cargo test
-cargo clippy --all-targets -- -D warnings
-groff -man -Tutf8 -ww -z man/man1/wayhud.1   # man page lint
+cargo clippy --all-targets --locked -- -D warnings
+cargo test --locked
+cargo deny check advisories sources           # RustSec, and source pinning
+cargo machete                                 # dependencies nothing imports
+groff -man -Tutf8 -ww -z man/man1/wayhud.1    # man page lint
 groff -man -Tutf8 -ww -z man/man5/wayhud.5
+nix build                                     # what `nix run github:…` does
 ```
+
+That is the whole of CI, in the same order and with the same flags. `--locked`
+matters: without it cargo may update the committed lockfile, and a build that
+did is not the build CI checked. `nix build` is worth running before a push —
+it compiles the flake and runs the suite a second time in a sandbox with no
+network and no `$HOME`, which is where a test that quietly depended on either
+finally says so.
 
 Install the pre-commit hook once per clone — it lints the index, not the
 working tree:

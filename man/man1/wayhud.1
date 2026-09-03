@@ -258,8 +258,14 @@ is required for
 .BR "\-\-output current" .
 .TP
 .B XDG_CONFIG_HOME
-Base directory for the config file. Falls back to
+Base directory for the config file, used only when it holds an
+.I absolute
+path. Unset, empty or relative, it falls back to
 .IR $HOME/.config .
+An empty value taken at face value would resolve the config relative to the
+current directory, which is how a file in
+.I $HOME
+goes unread with no complaint.
 .SH EXIT STATUS
 .TP
 .B 0
