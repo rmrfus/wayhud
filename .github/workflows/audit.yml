@@ -1,0 +1,27 @@
+name: Audit
+
+# On a schedule, not only on push. An advisory published after the last commit
+# is invisible until the next one, and for a tool that sits on a machine for
+# months that is the normal case rather than the edge case.
+on:
+  schedule:
+    - cron: '17 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    name: cargo deny
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      - name: Advisories and sources
+        run: nix develop --command cargo deny check advisories sources

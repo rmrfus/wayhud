@@ -5,6 +5,8 @@ on:
     branches: [main]
   pull_request:
 
+# Read at the top level; nothing here writes. A job that needs more says so
+# itself rather than the whole workflow being widened for one step.
 permissions:
   contents: read
 
@@ -17,9 +19,12 @@ jobs:
     name: fmt · clippy · test · package
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      # Actions are pinned to a commit, not a tag: a tag is mutable, and in the
+      # tj-actions/changed-files compromise (CVE-2025-30066) every tag was
+      # repointed at a commit that dumped CI secrets into the logs.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
-      - uses: cachix/install-nix-action@v31
+      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31
         with:
           extra_nix_config: |
             experimental-features = nix-command flakes
@@ -38,10 +43,11 @@ jobs:
           nix develop --command groff -man -Tutf8 -ww -z man/man1/wayhud.1
           nix develop --command groff -man -Tutf8 -ww -z man/man5/wayhud.5
 
-      # RustSec advisories against the committed lockfile. Covers what
-      # cargo-audit does, so this is the only scanner here.
-      - name: Advisories
-        run: nix develop --command cargo deny check advisories
+      # Both checks, not just advisories: the [sources] section in deny.toml is
+      # only read by `check sources`, so listing advisories alone would leave
+      # unknown-git = "deny" as configuration nothing ever runs.
+      - name: Advisories and sources
+        run: nix develop --command cargo deny check advisories sources
 
       # A dependency nothing imports is not a crash; it keeps appearing in the
       # advisory scan above for code that is no longer called, and can hold the
@@ -51,5 +57,51 @@ jobs:
 
       # Not just a local convenience: without this the flake rots quietly and
       # the breakage lands on whoever first runs `nix run github:rmrfus/wayhud`.
+      # It also runs the suite a second time under buildRustPackage's doCheck,
+      # in a sandbox with no network and no $HOME.
+      - name: Package
+        run: nix build
+
+  msrv:
+    # rust-version is otherwise a claim nothing checks: the devshell ships
+    # whatever nixpkgs pins (1.97 at the time of writing), so a floor of 1.92
+    # would stay green for months and break the first stranger running
+    # `cargo install --locked`. clippy's incompatible_msrv covers library items
+    # against the floor, but not language features — the let-chain in
+    # Config::merged is 1.88 and it says nothing about it.
+    name: MSRV 1.92
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master
+        with:
+          toolchain: "1.92"
+
+      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      # The C libraries come from the devshell, the compiler from rustup: nix
+      # has no historical rustc and rustup cannot supply gtk4-layer-shell.
+      - name: Check on the declared floor
+        run: nix develop --command rustup run 1.92 cargo check --all-targets --locked
+
+  aarch64:
+    # The flake claims aarch64-linux in `systems`, which is an unverified
+    # promise until something builds it. A native runner rather than pkgsCross:
+    # cross-compiling GTK4, pango and glibc has no binary cache behind it and
+    # would build the world, while cache.nixos.org does carry aarch64-linux.
+    name: aarch64
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
       - name: Package
         run: nix build
