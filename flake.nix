@@ -69,6 +69,8 @@
             clippy
             rustfmt
             rust-analyzer
+            cargo-deny # advisory scan: cargo deny check advisories
+            cargo-machete # finds a [dependencies] entry nothing imports
             groff # man page lint: groff -man -Tutf8 -ww -z man/man{1,5}/wayhud.*
           ];
           # cargo doesn't RPATH the nix store, so binaries run straight from

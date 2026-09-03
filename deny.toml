@@ -1,0 +1,6 @@
+# Advisories only. `cargo deny check advisories` reads the RustSec database and
+# covers what `cargo audit` does, so this is the one tool. [bans] and
+# [licenses] are for shipping to strangers and for legal review; this is a
+# personal overlay for one compositor.
+[advisories]
+version = 2

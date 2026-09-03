@@ -38,5 +38,18 @@ jobs:
           nix develop --command groff -man -Tutf8 -ww -z man/man1/wayhud.1
           nix develop --command groff -man -Tutf8 -ww -z man/man5/wayhud.5
 
+      # RustSec advisories against the committed lockfile. Covers what
+      # cargo-audit does, so this is the only scanner here.
+      - name: Advisories
+        run: nix develop --command cargo deny check advisories
+
+      # A dependency nothing imports is not a crash; it keeps appearing in the
+      # advisory scan above for code that is no longer called, and can hold the
+      # MSRV higher than our own source needs.
+      - name: Unused dependencies
+        run: nix develop --command cargo machete
+
+      # Not just a local convenience: without this the flake rots quietly and
+      # the breakage lands on whoever first runs `nix run github:rmrfus/wayhud`.
       - name: Package
         run: nix build
