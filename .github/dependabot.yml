@@ -1,0 +1,22 @@
+# Keeps the action SHAs current. Pinning to a commit is what stops a retagged
+# action from running (CVE-2025-30066), but the same pin means a fix to an
+# action never arrives on its own — dependabot rewrites the SHA and the version
+# comment together, which is the half the pin cannot do for itself.
+#
+# No `ignore` entry for dtolnay/rust-toolchain, deliberately. The usual hazard
+# is a toolchain pinned through its ref, where bumping the action also bumps the
+# floor being tested and the MSRV job quietly starts proving nothing. Here the
+# floor lives in `with: toolchain: "1.92"`, so the SHA and the version it tests
+# are independent. If that ever moves into the ref, this file needs the ignore.
+#
+# Only github-actions: cargo dependencies are pinned by a committed lockfile and
+# watched by `cargo deny check advisories` on a schedule, so a second stream of
+# version-bump pull requests would be noise rather than coverage.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: CI
