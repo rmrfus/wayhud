@@ -103,17 +103,19 @@ Fill colour of the glyphs. Any colour GTK's CSS parser accepts:
 .BR "rgba(184,187,38,0.8)" ,
 .BR green .
 .TP
-.BR \-\-outline " \fICOLOUR\fR"
+.BR \-\-outline " \fICOLOUR\fR[:\fIWIDTH\fR]"
 Outline colour, or
 .B none
 to draw the glyphs flat. The outline is a real cairo stroke around the glyph
 path, not a shadow, so it stays clean at display sizes.
 .IP
-Its width comes from
+.I WIDTH
+is in logical pixels, 0 to 128, and pins the stroke the way
 .B outline_width
-in the config. Left unset there, it scales with the font size, keeping the
-halo a fixed fraction of the stem: a constant width that looks like a fine
-contour at 72pt reads as fake bold at 24pt.
+does in the config. Without it the flag changes only the colour and leaves the
+width as it was \- which, left unset, means it scales with the font size,
+keeping the halo a fixed fraction of the stem: a constant width that looks
+like a fine contour at 72pt reads as fake bold at 24pt.
 .TP
 .BR \-\-glow " \fICOLOUR\fR[:\fIRADIUS\fR]"
 Paint a soft halo behind the glyphs, or

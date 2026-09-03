@@ -126,7 +126,10 @@ default: derived from the font size)
 Width of that stroke. Left unset it is the font size divided by 14, which
 keeps the visible halo a fixed fraction of the stem thickness across sizes;
 a constant that looks like a fine contour at 72pt reads as fake bold at
-24pt. Set it to pin an exact width. Must not be negative.
+24pt. Set it to pin an exact width, 0 to 128 \- the same ceiling as
+.BR glow.radius ,
+because both are added to the padding and the padding is subtracted from the
+monitor width that decides where lines wrap.
 .TP
 .B glow
 .RI ( table ,

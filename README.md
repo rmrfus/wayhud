@@ -88,7 +88,7 @@ file format.
 | `-s, --style`   | `default` | Preset from the config file                            |
 | `--font`        | —         | Pango description, e.g. `"Monospace 72"`               |
 | `--color`       | —         | Any CSS colour GTK parses                              |
-| `--outline`     | —         | Outline colour, or `none` for flat glyphs              |
+| `--outline`     | —         | Outline colour, optionally `:WIDTH`, or `none`         |
 | `--glow`        | —         | Halo colour, optionally `:RADIUS`, or `none`           |
 | `--position`    | —         | `center`, `top`, `bottom-right`, …                     |
 | `--typewriter`  | —         | Characters/second; `0` reveals instantly               |

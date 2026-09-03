@@ -22,7 +22,9 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use gtk::glib;
 
-use config::{Config, Dir, Glow, HAlign, MAX_LIFETIME_MS, Reveal, Style, VAlign, Vanish};
+use config::{
+    Config, Dir, Glow, HAlign, MAX_EDGE_PX, MAX_LIFETIME_MS, Reveal, Style, VAlign, Vanish,
+};
 use hud::Hud;
 use outputs::OutputSpec;
 
@@ -58,7 +60,8 @@ struct Cli {
     #[arg(long)]
     color: Option<String>,
 
-    /// Outline colour, or "none" to draw the glyphs flat.
+    /// Outline colour, optionally ":WIDTH" in logical pixels, or "none" to
+    /// draw the glyphs flat.
     #[arg(long)]
     outline: Option<String>,
 
@@ -269,7 +272,9 @@ fn apply_overrides(style: &mut Style, cli: &Cli) -> Result<()> {
         style.color = c.clone();
     }
     if let Some(o) = &cli.outline {
-        style.outline = if o == "none" { None } else { Some(o.clone()) };
+        let (colour, width) = parse_edge(o, "--outline", style.outline_width)?;
+        style.outline = colour;
+        style.outline_width = width;
     }
     if let Some(t) = cli.timeout {
         // An upper bound as well as a lower one: the value comes from argv,
@@ -362,34 +367,54 @@ fn parse_vanish(spec: &str, fallback_ms: u64) -> Result<Vanish> {
     })
 }
 
-/// `#b8bb26`, `#b8bb26:20`, `none`.
+/// `#b8bb26`, `#b8bb26:20`, `none` — shared by `--outline` and `--glow`,
+/// which differ only in what the number means.
 ///
-/// Carries the preset's radius and alpha over when the flag does not state a
-/// radius, so a colour can be tried without restating the geometry — the same
-/// contract `--vanish` has for its duration.
-fn parse_glow(spec: &str, current: Option<&Glow>) -> Result<Option<Glow>> {
-    if spec == "none" {
-        return Ok(None);
-    }
-    let base = current.cloned().unwrap_or_default();
-    let (color, radius) = match spec.split_once(':') {
-        Some((c, r)) => (
+/// Returns `(colour, size)`, both `None` for `"none"`. Without a `:SIZE` the
+/// caller's current value comes back unchanged, so a colour can be tried
+/// without restating the geometry — the same contract `--vanish` has for its
+/// duration.
+fn parse_edge(
+    spec: &str,
+    flag: &str,
+    current: Option<f64>,
+) -> Result<(Option<String>, Option<f64>)> {
+    let (colour, size) = match spec.split_once(':') {
+        Some((c, n)) => (
             c,
-            r.parse::<f64>()
-                .with_context(|| format!("bad radius {r:?} in --glow"))?,
+            Some(
+                n.parse::<f64>()
+                    .with_context(|| format!("bad size {n:?} in {flag}"))?,
+            ),
         ),
-        None => (spec, base.radius),
+        None => (spec, current),
     };
-    anyhow::ensure!(
-        (0.0..=128.0).contains(&radius),
-        "--glow radius must be between 0 and 128, got {radius}"
-    );
-    // An empty colour would parse as the default rather than being rejected,
-    // and "--glow :20" is a typo, not a request.
-    anyhow::ensure!(!color.is_empty(), "--glow needs a colour before the radius");
+    if colour == "none" {
+        return Ok((None, size));
+    }
+    // An empty colour would fall through to whatever was configured rather
+    // than being rejected, and "--outline :5" is a typo, not a request.
+    anyhow::ensure!(!colour.is_empty(), "{flag} needs a colour before the size");
+    if let Some(n) = size {
+        anyhow::ensure!(
+            (0.0..=MAX_EDGE_PX).contains(&n),
+            "{flag} size must be between 0 and {MAX_EDGE_PX}, got {n}"
+        );
+    }
+    Ok((Some(colour.to_string()), size))
+}
+
+/// `--glow` on top of [`parse_edge`], which it shares with `--outline`: the
+/// alpha has no place on the command line, so it comes from the preset.
+fn parse_glow(spec: &str, current: Option<&Glow>) -> Result<Option<Glow>> {
+    let base = current.cloned().unwrap_or_default();
+    let (colour, radius) = parse_edge(spec, "--glow", Some(base.radius))?;
+    let Some(colour) = colour else {
+        return Ok(None);
+    };
     Ok(Some(Glow {
-        color: color.to_string(),
-        radius,
+        color: colour,
+        radius: radius.unwrap_or(base.radius),
         ..base
     }))
 }
@@ -541,6 +566,55 @@ mod tests {
         let cli = Cli::parse_from(["wayhud", "x", "--typewriter", "0"]);
         apply_overrides(&mut s, &cli).unwrap();
         assert!(matches!(s.reveal, Reveal::Instant));
+    }
+
+    #[test]
+    fn outline_flag_can_pin_a_width() {
+        let mut style = Style::default();
+        let cli = Cli::parse_from(["wayhud", "x", "--outline", "#123456:5"]);
+        apply_overrides(&mut style, &cli).unwrap();
+        assert_eq!(style.outline.as_deref(), Some("#123456"));
+        assert_eq!(style.outline_width, Some(5.0));
+    }
+
+    #[test]
+    fn outline_flag_without_a_width_leaves_the_scaling_alone() {
+        // Unset, outline_width scales with the font size, and a colour-only
+        // flag must not silently pin it to whatever the default happened to
+        // compute.
+        let mut style = Style::default();
+        assert_eq!(style.outline_width, None, "precondition");
+        let cli = Cli::parse_from(["wayhud", "x", "--outline", "#123456"]);
+        apply_overrides(&mut style, &cli).unwrap();
+        assert_eq!(style.outline.as_deref(), Some("#123456"));
+        assert_eq!(style.outline_width, None, "the width must stay derived");
+    }
+
+    #[test]
+    fn outline_flag_carries_a_configured_width_across() {
+        let mut style = Style {
+            outline_width: Some(9.0),
+            ..Style::default()
+        };
+        let cli = Cli::parse_from(["wayhud", "x", "--outline", "#123456"]);
+        apply_overrides(&mut style, &cli).unwrap();
+        assert_eq!(style.outline_width, Some(9.0));
+    }
+
+    #[test]
+    fn a_bad_outline_size_is_rejected_not_ignored() {
+        assert!(parse_edge(":5", "--outline", None).is_err());
+        assert!(parse_edge("#fff:abc", "--outline", None).is_err());
+        assert!(parse_edge("#fff:900", "--outline", None).is_err());
+        assert!(parse_edge("#fff:-1", "--outline", None).is_err());
+    }
+
+    #[test]
+    fn outline_none_with_a_size_is_still_none() {
+        // "none:5" is nonsense but reachable; it must switch the stroke off
+        // rather than resolve to a colour literally spelled "none".
+        let (colour, _) = parse_edge("none:5", "--outline", None).unwrap();
+        assert!(colour.is_none());
     }
 
     #[test]

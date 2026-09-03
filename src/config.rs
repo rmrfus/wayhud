@@ -30,6 +30,15 @@ use serde::Deserialize;
 /// exactly as well as a huge `--timeout` does.
 pub const MAX_LIFETIME_MS: u64 = 3_600_000;
 
+/// Ceiling on anything that widens the padding — the outline stroke and the
+/// glow radius.
+///
+/// The padding is subtracted from the monitor width to get the wrapping
+/// budget, so an unbounded value there does not merely look wrong: it starves
+/// the text until every line breaks after one word, and the glow additionally
+/// sizes a device-resolution mask surface from it.
+pub const MAX_EDGE_PX: f64 = 128.0;
+
 /// Where a block of text sits horizontally. Maps onto layer-shell anchors:
 /// `Center` means "anchor neither edge", which the compositor centres for us.
 ///
@@ -273,7 +282,14 @@ impl Style {
             self.timeout_ms
         );
         if let Some(w) = self.outline_width {
-            anyhow::ensure!(w >= 0.0, "outline_width must not be negative, got {w}");
+            // Same ceiling as glow.radius, for the same reason: both are added
+            // to the padding, and the padding comes out of the monitor width
+            // that decides where lines wrap. Unbounded, either one starves the
+            // text until every line breaks after a single word.
+            anyhow::ensure!(
+                (0.0..=MAX_EDGE_PX).contains(&w),
+                "outline_width must be between 0 and {MAX_EDGE_PX}, got {w}"
+            );
         }
         if let Reveal::Typewriter { jitter, cps, .. } = self.reveal {
             anyhow::ensure!(
@@ -295,8 +311,8 @@ impl Style {
             // both sizes a device-resolution mask surface and starves the text
             // of width until every line wraps after one word.
             anyhow::ensure!(
-                (0.0..=128.0).contains(&glow.radius),
-                "glow.radius must be between 0 and 128, got {}",
+                (0.0..=MAX_EDGE_PX).contains(&glow.radius),
+                "glow.radius must be between 0 and {MAX_EDGE_PX}, got {}",
                 glow.radius
             );
             anyhow::ensure!(
