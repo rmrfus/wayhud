@@ -3,6 +3,16 @@ name: Audit
 # On a schedule, not only on push. An advisory published after the last commit
 # is invisible until the next one, and for a tool that sits on a machine for
 # months that is the normal case rather than the edge case.
+#
+# Accepted limitation, stated rather than left to be discovered: GitHub
+# disables a scheduled workflow in a PUBLIC repository "when no repository
+# activity has occurred in 60 days". That is the same dormancy this schedule
+# exists to cover, so it stops in exactly the case that motivated it. Taken on
+# the grounds that the weeks right after the last commit are when a fresh
+# advisory against a still-current tree matters most, and that any push resets
+# the clock. If that stops being good enough the run has to be driven from
+# outside the repository; the workflow_dispatch below is what such a driver
+# would call.
 on:
   schedule:
     - cron: '17 6 * * 1'
