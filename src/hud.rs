@@ -5,7 +5,7 @@
 //! path gives a real stroke, and the typewriter clip and the caret come for
 //! free in the same draw call.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use anyhow::{Context, Result};
@@ -199,19 +199,28 @@ fn fit_width(layout: &pango::Layout, max_width: i32) {
     }
 }
 
-/// A blurred A8 image of the glyphs, ready to be used as a mask for the glow
-/// colour.
+/// A blurred A8 image of the REVEALED glyphs, ready to mask the glow colour.
 ///
-/// Built once per window. It depends only on the text, the font and the radius,
-/// all of which are fixed for the life of the process — and the vanish redraws
-/// every frame, so rebuilding it there would put a megapixel of box filter
-/// behind each one.
+/// The reveal is clipped here, before the blur, and that is the whole point.
+/// Clipping the finished halo with a rectangle instead leaves a hard edge
+/// wherever the blurred mask is still bright at the boundary — which, at any
+/// useful radius, is a straight bright line down the screen at the caret and
+/// another under the line being typed. Cutting the ink first lets the halo
+/// fade off the last typed glyph the way it fades off every other edge.
+///
+/// The price is that the mask is no longer built once: it depends on how many
+/// characters are showing. The caller rebuilds it when that count changes —
+/// per keystroke, not per frame — and only the revealed corner is blurred, so
+/// early characters cost a fraction of a full message.
 ///
 /// Rendered at DEVICE resolution: everything else here is in logical pixels,
 /// but a mask built at logical size and scaled up is a blur of a blur, soft on
 /// exactly the HiDPI outputs this runs on.
 fn glow_mask(
     layout: &pango::Layout,
+    text: &str,
+    visible: usize,
+    total: usize,
     radius: f64,
     pad: f64,
     scale: f64,
@@ -223,10 +232,25 @@ fn glow_mask(
         return None;
     }
     let mut surface = gtk::cairo::ImageSurface::create(gtk::cairo::Format::A8, w, h).ok()?;
+    // How much of the surface the blur has to touch. Everything outside is
+    // zero and stays zero, so blurring it is pure work for no pixels.
+    let (mut live_w, mut live_h) = (w, h);
     {
         let mcr = gtk::cairo::Context::new(&surface).ok()?;
         mcr.scale(scale, scale);
         mcr.translate(pad, pad);
+        if visible < total {
+            let caret = caret_rect(layout, text, visible);
+            // Whole lines above the caret, then the typed part of its line.
+            // No slack past the caret: an unrevealed glyph must not reach the
+            // mask at all, and no room below the line box either, because the
+            // blur will carry the halo past it on its own.
+            mcr.rectangle(-pad, -pad, f64::from(tw) + pad * 2.0, caret.y + pad);
+            mcr.rectangle(-pad, caret.y, pad + caret.x, caret.h);
+            mcr.clip();
+            live_w = (((pad + caret.x + radius) * scale).ceil() as i32).clamp(1, w);
+            live_h = ((((pad + caret.y + caret.h + radius) * scale).ceil()) as i32).clamp(1, h);
+        }
         // Colour is ignored in A8; only the coverage matters.
         mcr.set_source_rgba(1.0, 1.0, 1.0, 1.0);
         mcr.move_to(0.0, 0.0);
@@ -236,7 +260,7 @@ fn glow_mask(
     surface.flush();
 
     let stride = surface.stride() as usize;
-    let (uw, uh) = (w as usize, h as usize);
+    let (uw, uh) = (live_w as usize, live_h as usize);
     let mut buf = vec![0u8; uw * uh];
     {
         let data = surface.data().ok()?;
@@ -300,20 +324,41 @@ fn box_pass(
     step: usize,
     lead: usize,
 ) {
-    let win = (2 * r + 1) as f32;
+    let inv = 1.0 / (2 * r + 1) as f32;
     for run in 0..runs {
         let base = run * lead;
-        let at = |i: usize| src[base + i * step];
-        let mut sum: f32 = (0..=r.min(len - 1)).map(at).sum();
+        // Bounds checks dominate this loop — three per pixel through an
+        // indexing closure measured 3.3ns per operation, an order off what an
+        // add and a subtract cost. Sub-slicing once per run lets the compiler
+        // drop them.
+        let src = &src[base..];
+        let dst = &mut dst[base..];
+        let mut sum: f32 = (0..=r.min(len - 1)).map(|i| src[i * step]).sum();
         for i in 0..len {
-            dst[base + i * step] = sum / win;
+            dst[i * step] = sum * inv;
             if i + r + 1 < len {
-                sum += at(i + r + 1);
+                sum += src[(i + r + 1) * step];
             }
             if i >= r {
-                sum -= at(i - r);
+                sum -= src[(i - r) * step];
             }
         }
+    }
+}
+
+/// How many characters are on screen in this phase.
+///
+/// One place, because the glow mask and the draw path have to agree on it: a
+/// mask built for a different count than the ink is drawn with shows as a halo
+/// that leads or trails the text.
+fn visible_chars(hud: &Hud, phase: Phase) -> usize {
+    let total = hud.timeline.chars();
+    match phase {
+        Phase::Reveal { chars } => chars,
+        Phase::Hold => total,
+        Phase::Vanish { p } if hud.style.vanish.is_untype() => hud.timeline.untype_visible(p),
+        Phase::Vanish { .. } => total,
+        Phase::Done => total,
     }
 }
 
@@ -369,10 +414,13 @@ pub fn present(
     // text and the font, and the vanish redraws every frame. The scale is the
     // monitor's, not the display's — two outputs can differ, and the mask has
     // to match the one it will be painted on.
-    let glow = hud.glow.as_ref().and_then(|(rgba, g)| {
-        glow_mask(&layout, g.radius, pad, monitor.scale_factor() as f64)
-            .map(|mask| (Rc::new(mask), *rgba, g.alpha))
-    });
+    // The mask depends on how many characters are showing, so it is cached by
+    // that count and rebuilt when it changes — per keystroke while typing, per
+    // erased character while untyping, never per frame. `usize::MAX` is the
+    // "nothing built yet" marker, since 0 is a legitimate count.
+    let glow_scale = f64::from(monitor.scale_factor());
+    let glow_cache: RefCell<(usize, Option<Rc<gtk::cairo::ImageSurface>>)> =
+        RefCell::new((usize::MAX, None));
     let (tw, th) = layout.pixel_size();
     area.set_content_width(tw + (pad * 2.0) as i32);
     area.set_content_height(th + (pad * 2.0) as i32);
@@ -387,12 +435,30 @@ pub fn present(
         let hud = hud.clone();
         let frame = frame.clone();
         move |_area, cr, _w, _h| {
+            let phase = frame.phase.get();
+            let glow = hud.glow.as_ref().and_then(|(rgba, g)| {
+                let visible = visible_chars(&hud, phase);
+                let mut cache = glow_cache.borrow_mut();
+                if cache.0 != visible {
+                    let mask = glow_mask(
+                        &layout,
+                        &hud.text,
+                        visible,
+                        hud.timeline.chars(),
+                        g.radius,
+                        pad,
+                        glow_scale,
+                    );
+                    *cache = (visible, mask.map(Rc::new));
+                }
+                cache.1.clone().map(|m| (m, *rgba, g.alpha))
+            });
             draw(
                 cr,
                 &hud,
                 &layout,
                 glow.as_ref().map(|(m, c, a)| (m.as_ref(), *c, *a)),
-                frame.phase.get(),
+                phase,
                 frame.blink.get(),
             );
         }
@@ -569,9 +635,7 @@ fn draw(
     }
 
     if let Some((mask, colour, glow_alpha)) = glow {
-        paint_glow(
-            cr, mask, layout, hud, colour, glow_alpha, visible, total, alpha, whiten, pad,
-        );
+        paint_glow(cr, mask, layout, colour, alpha * glow_alpha, whiten, pad);
     }
     // Blink state is decided once per tick; recomputing it here would be a
     // second source of truth for the same thing.
@@ -614,35 +678,21 @@ fn draw(
 
 /// Paint the halo: the blurred mask, in the glow colour, under the glyphs.
 ///
+/// No clipping here. The mask already contains only the revealed glyphs, which
+/// is what lets the halo fade off the last typed one instead of being severed
+/// by a rectangle — see `glow_mask`.
+///
 /// The mask is device-resolution while the context is in logical pixels, so it
-/// is drawn under an inverse scale. `mask_surface` is offset by `-pad` because
-/// the mask was rendered with the text at `+pad` inside it, and the caller has
-/// already translated the context to the text origin.
-///
-/// The typewriter clip stops at the caret with NO slack, unlike `paint_text`,
-/// which allows the stroke width. Letting the halo run a radius past the caret
-/// showed the not-yet-typed letter's glow as a smudge the caret then sat
-/// inside, so the caret read as belonging after the light rather than after
-/// the character. The straight vertical edge that clipping leaves in the last
-/// letter's halo is covered by the caret's own halo, which is painted at
-/// exactly that seam — see `paint_caret_glow`.
-///
-/// Vertically it is the opposite: the caret's line gets a radius of extra
-/// room below it, because a halo reaches that far past the line box and
-/// clipping at the box severed it flat.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "same argument list as paint_text, plus the mask and its colour"
-)]
+/// is drawn under an inverse scale. It is offset by `-pad` because the mask was
+/// rendered with the text at `+pad` inside it, and the caller has already
+/// translated the context to the text origin.
 fn paint_glow(
     cr: &gtk::cairo::Context,
     mask: &gtk::cairo::ImageSurface,
     layout: &pango::Layout,
-    hud: &Hud,
     colour: gdk::RGBA,
-    glow_alpha: f64,
-    visible: usize,
-    total: usize,
+    // `alpha` arrives with the halo's own opacity already multiplied into the
+    // frame's, since nothing here needs the two apart.
     alpha: f64,
     whiten: f64,
     pad: f64,
@@ -652,28 +702,7 @@ fn paint_glow(
         return;
     }
     let _ = cr.save();
-    if visible < total {
-        let caret = caret_rect(layout, &hud.text, visible);
-        let (w, _) = layout.pixel_size();
-        // Width from the surface edge, hence the leading `pad` — see the same
-        // pair in `paint_text` for what omitting it costs.
-        //
-        // The caret's line gets a radius of extra height. A halo reaches that
-        // far past the line box, and clipping at the box cut it flat along the
-        // bottom of whichever line was being typed, until the message finished
-        // and the clip went away entirely. Above the line the first rectangle
-        // already let it through, so this only restores the symmetry.
-        //
-        // On a multi-line message the extra height also admits the top of the
-        // NEXT line's halo, which has not been typed. That is the far tail of
-        // the blur against the bright near-glyph band the clip was severing,
-        // and every other edge here already lets a halo cross it.
-        let below = hud.glow.as_ref().map_or(0.0, |(_, g)| g.radius);
-        cr.rectangle(-pad, -pad, f64::from(w) + pad * 2.0, caret.y + pad);
-        cr.rectangle(-pad, caret.y, pad + caret.x, caret.h + below);
-        cr.clip();
-    }
-    set_color(cr, colour, alpha * glow_alpha, whiten);
+    set_color(cr, colour, alpha, whiten);
     cr.scale(1.0 / scale, 1.0 / scale);
     // Positions are in mask pixels from here on, hence pad through the scale.
     let _ = cr.mask_surface(mask, -pad * scale, -pad * scale);
@@ -1358,7 +1387,7 @@ mod tests {
             (f64::from(tw) + pad * 2.0) as i32,
             (f64::from(th) + pad * 2.0) as i32,
         );
-        let mask = glow_mask(&layout, radius, pad, 1.0).expect("mask");
+        let mask = glow_mask(&layout, &hud.text, 1, 1, radius, pad, 1.0).expect("mask");
         let (colour, _) = hud.glow.as_ref().expect("glow resolved");
 
         let glyphs = lit_pixels(
@@ -1374,7 +1403,7 @@ mod tests {
         let halo = lit_pixels(
             |cr| {
                 cr.translate(pad, pad);
-                paint_glow(cr, &mask, &layout, &hud, *colour, 1.0, 1, 1, 1.0, 0.0, pad);
+                paint_glow(cr, &mask, &layout, *colour, 1.0, 0.0, pad);
             },
             w,
             h,
@@ -1494,7 +1523,16 @@ mod tests {
             (f64::from(tw) + pad * 2.0) as i32,
             (f64::from(th) + pad * 2.0) as i32,
         );
-        let mask = glow_mask(&layout, radius, pad, 1.0).expect("mask");
+        let mask = glow_mask(
+            &layout,
+            text,
+            text.chars().count(),
+            text.chars().count(),
+            radius,
+            pad,
+            1.0,
+        )
+        .expect("mask");
         let (colour, _) = hud.glow.as_ref().expect("glow");
         let visible = 3usize;
         let caret = caret_rect(&layout, text, visible);
@@ -1504,19 +1542,7 @@ mod tests {
         {
             let cr = gtk::cairo::Context::new(&surface).expect("context");
             cr.translate(pad, pad);
-            paint_glow(
-                &cr,
-                &mask,
-                &layout,
-                &hud,
-                *colour,
-                1.0,
-                visible,
-                text.len(),
-                1.0,
-                0.0,
-                pad,
-            );
+            paint_glow(&cr, &mask, &layout, *colour, 1.0, 0.0, pad);
         }
         surface.flush();
         let stride = surface.stride() as usize;
@@ -1590,14 +1616,20 @@ mod tests {
     }
 
     #[test]
-    fn the_text_halo_stops_at_the_caret() {
-        // Letting it run a radius past the caret showed the not-yet-typed
-        // letter's glow as a smudge the caret then sat inside, so the caret
-        // read as belonging after the light rather than after the character.
-        let radius = 12.0;
+    fn the_halo_has_no_step_where_the_reveal_ends() {
+        // The bug behind this: the halo was blurred from the whole message and
+        // then clipped with a rectangle, so at the caret it fell from bright to
+        // nothing between two pixels — a straight vertical line down the
+        // screen, and another under the line being typed. Clipping the ink
+        // before the blur instead lets it fade the way it does off every other
+        // edge. What is asserted is the absence of a step, not the absence of
+        // light: a halo that ends abruptly is the artefact, one that reaches
+        // past the caret and dies out is correct.
+        let radius = 16.0;
         let style = Style {
-            font: "Sans 48".into(),
+            font: "Sans 72".into(),
             reveal: TW,
+            outline: None,
             glow: Some(crate::config::Glow {
                 color: "#ffffff".into(),
                 radius,
@@ -1605,7 +1637,7 @@ mod tests {
             }),
             ..Style::default()
         };
-        let text = "ooooo";
+        let text = "mmmmm";
         let hud = Hud::new(style, text.into(), 1).expect("hud");
         let layout = bare_layout(text, &hud.style.font);
         let pad = hud.pad();
@@ -1614,9 +1646,9 @@ mod tests {
             (f64::from(tw) + pad * 2.0) as i32,
             (f64::from(th) + pad * 2.0) as i32,
         );
-        let mask = glow_mask(&layout, radius, pad, 1.0).expect("mask");
+        let visible = 3usize;
+        let mask = glow_mask(&layout, text, visible, 5, radius, pad, 1.0).expect("mask");
         let (colour, _) = hud.glow.as_ref().expect("glow");
-        let visible = 2;
         let caret = caret_rect(&layout, text, visible);
 
         let mut surface =
@@ -1624,21 +1656,34 @@ mod tests {
         {
             let cr = gtk::cairo::Context::new(&surface).expect("context");
             cr.translate(pad, pad);
-            paint_glow(
-                &cr, &mask, &layout, &hud, *colour, 1.0, visible, 5, 1.0, 0.0, pad,
-            );
+            paint_glow(&cr, &mask, &layout, *colour, 1.0, 0.0, pad);
         }
         surface.flush();
         let stride = surface.stride() as usize;
         let data = surface.data().expect("pixels");
-        // Sample the caret's own line, a couple of pixels right of the caret.
+
+        // A horizontal run through the middle of the line, from inside the
+        // revealed text to well past where the clip used to cut.
         let y = (pad + caret.y + caret.h / 2.0) as usize;
-        let x = (pad + caret.x + 2.0) as usize;
-        assert_eq!(
-            data[y * stride + x],
-            0,
-            "the text halo bled {} past the caret at x={x}",
-            data[y * stride + x]
+        let from = (pad + caret.x - 3.0 * radius).max(0.0) as usize;
+        let to = ((pad + caret.x + 3.0 * radius) as usize).min(w as usize - 1);
+        let run: Vec<i32> = (from..=to)
+            .map(|x| i32::from(data[y * stride + x]))
+            .collect();
+        let peak = run.iter().copied().max().unwrap_or(0);
+        assert!(peak > 0, "no halo along the sampled row at all");
+        let step = run
+            .windows(2)
+            .map(|p| (p[1] - p[0]).abs())
+            .max()
+            .unwrap_or(0);
+        // A box blur of radius r cannot fall faster than about peak/r per
+        // pixel; a clipped edge falls the whole way in one. Half the peak is
+        // far above the former and far below the latter.
+        assert!(
+            step * 2 < peak,
+            "the halo steps by {step} of a {peak} peak in one pixel, which is \
+             an edge rather than a falloff"
         );
     }
 
@@ -1650,7 +1695,8 @@ mod tests {
         let (tw, _) = layout.pixel_size();
         let pad = 24.0;
         for scale in [1.0, 2.0] {
-            let mask = glow_mask(&layout, 8.0, pad, scale).expect("mask should build");
+            let mask =
+                glow_mask(&layout, "glow", 4, 4, 8.0, pad, scale).expect("mask should build");
             let want = (((tw as f64) + pad * 2.0) * scale).ceil() as i32;
             assert_eq!(mask.width(), want, "scale {scale}");
         }
