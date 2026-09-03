@@ -115,6 +115,21 @@ in the config. Left unset there, it scales with the font size, keeping the
 halo a fixed fraction of the stem: a constant width that looks like a fine
 contour at 72pt reads as fake bold at 24pt.
 .TP
+.BR \-\-glow " \fICOLOUR\fR[:\fIRADIUS\fR]"
+Paint a soft halo behind the glyphs, or
+.B none
+for no halo. The radius is in logical pixels, 0 to 128; without it the flag
+keeps whatever the preset had, so a colour can be tried without restating the
+geometry.
+.IP
+The halo is drawn
+.I under
+the outline rather than instead of it, so the two combine: a dark contour with
+a coloured bloom outside it is one setting, not a choice. It is blurred once
+per output when the message is built, and it widens the padding \- which comes
+out of the wrapping budget, so a very large radius makes long lines wrap
+sooner.
+.TP
 .BR \-\-position " \fIPLACE\fR"
 Where the text block sits:
 .BR center ,

@@ -22,7 +22,7 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use gtk::glib;
 
-use config::{Config, Dir, HAlign, MAX_LIFETIME_MS, Reveal, Style, VAlign, Vanish};
+use config::{Config, Dir, Glow, HAlign, MAX_LIFETIME_MS, Reveal, Style, VAlign, Vanish};
 use hud::Hud;
 use outputs::OutputSpec;
 
@@ -61,6 +61,11 @@ struct Cli {
     /// Outline colour, or "none" to draw the glyphs flat.
     #[arg(long)]
     outline: Option<String>,
+
+    /// Halo behind the glyphs: a colour, optionally ":RADIUS" in logical
+    /// pixels, or "none". Painted under the outline, not instead of it.
+    #[arg(long)]
+    glow: Option<String>,
 
     /// Placement: center, top, bottom, left, right, top-left, bottom-right, …
     #[arg(long)]
@@ -311,6 +316,9 @@ fn apply_overrides(style: &mut Style, cli: &Cli) -> Result<()> {
         // so switching effect on the CLI doesn't silently reset the timing.
         style.vanish = parse_vanish(v, style.vanish.ms())?;
     }
+    if let Some(g) = &cli.glow {
+        style.glow = parse_glow(g, style.glow.as_ref())?;
+    }
     if cli.no_sound {
         style.sound.enabled = false;
     }
@@ -352,6 +360,38 @@ fn parse_vanish(spec: &str, fallback_ms: u64) -> Result<Vanish> {
              wash-down, wash-up, untype or dissolve)"
         ),
     })
+}
+
+/// `#b8bb26`, `#b8bb26:20`, `none`.
+///
+/// Carries the preset's radius and alpha over when the flag does not state a
+/// radius, so a colour can be tried without restating the geometry — the same
+/// contract `--vanish` has for its duration.
+fn parse_glow(spec: &str, current: Option<&Glow>) -> Result<Option<Glow>> {
+    if spec == "none" {
+        return Ok(None);
+    }
+    let base = current.cloned().unwrap_or_default();
+    let (color, radius) = match spec.split_once(':') {
+        Some((c, r)) => (
+            c,
+            r.parse::<f64>()
+                .with_context(|| format!("bad radius {r:?} in --glow"))?,
+        ),
+        None => (spec, base.radius),
+    };
+    anyhow::ensure!(
+        (0.0..=128.0).contains(&radius),
+        "--glow radius must be between 0 and 128, got {radius}"
+    );
+    // An empty colour would parse as the default rather than being rejected,
+    // and "--glow :20" is a typo, not a request.
+    anyhow::ensure!(!color.is_empty(), "--glow needs a colour before the radius");
+    Ok(Some(Glow {
+        color: color.to_string(),
+        radius,
+        ..base
+    }))
 }
 
 /// `top-left`, `bottom`, `center`, … in either order.
@@ -501,6 +541,54 @@ mod tests {
         let cli = Cli::parse_from(["wayhud", "x", "--typewriter", "0"]);
         apply_overrides(&mut s, &cli).unwrap();
         assert!(matches!(s.reveal, Reveal::Instant));
+    }
+
+    #[test]
+    fn glow_flag_keeps_the_configured_radius() {
+        let mut style = Style {
+            glow: Some(Glow {
+                color: "#111111".into(),
+                radius: 30.0,
+                alpha: 0.4,
+            }),
+            ..Style::default()
+        };
+        let cli = Cli::parse_from(["wayhud", "x", "--glow", "#ff0000"]);
+        apply_overrides(&mut style, &cli).unwrap();
+        let g = style.glow.expect("glow should survive a colour-only flag");
+        assert_eq!(g.color, "#ff0000");
+        assert_eq!(g.radius, 30.0, "the preset's radius must carry over");
+        assert_eq!(g.alpha, 0.4, "and so must its alpha");
+    }
+
+    #[test]
+    fn glow_flag_can_state_its_own_radius() {
+        let mut style = Style::default();
+        let cli = Cli::parse_from(["wayhud", "x", "--glow", "#8ec07c:18"]);
+        apply_overrides(&mut style, &cli).unwrap();
+        let g = style.glow.expect("glow");
+        assert_eq!(g.color, "#8ec07c");
+        assert_eq!(g.radius, 18.0);
+    }
+
+    #[test]
+    fn glow_none_switches_off_an_inherited_halo() {
+        let mut style = Style {
+            glow: Some(Glow::default()),
+            ..Style::default()
+        };
+        let cli = Cli::parse_from(["wayhud", "x", "--glow", "none"]);
+        apply_overrides(&mut style, &cli).unwrap();
+        assert!(style.glow.is_none());
+    }
+
+    #[test]
+    fn a_glow_without_a_colour_is_rejected_not_defaulted() {
+        // "--glow :20" is a typo; taking the empty string as "use the default
+        // colour" would render something nobody asked for.
+        assert!(parse_glow(":20", None).is_err());
+        assert!(parse_glow("#fff:abc", None).is_err());
+        assert!(parse_glow("#fff:900", None).is_err());
     }
 
     #[test]

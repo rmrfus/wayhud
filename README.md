@@ -89,6 +89,7 @@ file format.
 | `--font`        | —         | Pango description, e.g. `"Monospace 72"`               |
 | `--color`       | —         | Any CSS colour GTK parses                              |
 | `--outline`     | —         | Outline colour, or `none` for flat glyphs              |
+| `--glow`        | —         | Halo colour, optionally `:RADIUS`, or `none`           |
 | `--position`    | —         | `center`, `top`, `bottom-right`, …                     |
 | `--typewriter`  | —         | Characters/second; `0` reveals instantly               |
 | `--jitter`      | —         | Stagger keystroke gaps by ±this fraction (0–1)         |
@@ -183,6 +184,7 @@ vanish = { kind = "wash", ms = 300, dir = "up" }
 | `color`         | CSS colour              | `"#b8bb26"`                | Glyph fill                                            |
 | `outline`       | CSS colour              | `"#1d2021"`                | Stroke colour; `"none"` or omit for none              |
 | `outline_width` | float, logical px       | font size / 14             | Stroke width; unset it scales with the font           |
+| `glow`          | table                   | —                          | Halo behind the glyphs; omit for none                 |
 | `halign`        | `left` `center` `right` | `center`                   | Horizontal placement on the output                    |
 | `valign`        | `top` `center` `bottom` | `center`                   | Vertical placement                                    |
 | `margin`        | int, logical px         | `64`                       | Gap from the anchored edge; ignored on a centred axis |
@@ -201,6 +203,17 @@ the glyphs, so they cannot drift apart.
 `vanish` takes the kinds from the *In a preset* column under
 [Vanish effects](#vanish-effects) plus `ms`; note that `wash` is one kind there
 carrying a `dir` of `down` or `up`, not the two names the flag uses.
+
+`glow` is `{ color, radius, alpha }` — a blurred halo painted *under* the
+outline, not instead of it, so a dark contour with a coloured bloom outside it
+is one key rather than a choice between two. `radius` is in logical pixels
+(0–128) and `alpha` is the halo's peak opacity. `radius = 0` is off, which is
+how a preset takes back a glow inherited from `[style.default]`.
+
+The halo is blurred once per output when the message is built, not per frame —
+about 35 ms for a three-line message at 72pt on a scale-2 display, whatever the
+radius. It widens the padding, and the padding comes out of the wrapping
+budget, so a very large radius makes long lines wrap sooner.
 
 `sound` is `{ enabled, freq, decay_ms, gain, every }` — knob names match
 [blyamk](https://github.com/rmrfus/blyamk), so a sound dialled in there with

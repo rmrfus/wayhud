@@ -148,6 +148,40 @@ impl Vanish {
     }
 }
 
+/// A soft halo painted behind the glyphs.
+///
+/// Not an alternative to `outline` but a pass in front of it: the two are
+/// drawn in sequence, so a dark contour with a coloured bloom outside it is
+/// one setting away rather than a variant to choose between. A tagged enum
+/// here would have cost a config break to buy less.
+///
+/// `radius = 0` is off, which is how a preset takes back a glow inherited
+/// from `[style.default]` — TOML has no null, the same reason `outline` needs
+/// the literal `"none"`.
+#[derive(Deserialize, Clone, Debug)]
+#[serde(default, deny_unknown_fields)]
+pub struct Glow {
+    pub color: String,
+    /// Blur radius in logical pixels. Feeds the padding, and through it the
+    /// wrapping budget, so it is bounded rather than free.
+    pub radius: f64,
+    /// Peak opacity of the halo where it leaves the glyph.
+    pub alpha: f64,
+}
+
+impl Default for Glow {
+    fn default() -> Self {
+        Glow {
+            // Same green as the fill: a halo in the glyph's own colour reads as
+            // the glyph emitting light, which is the whole point. A contrasting
+            // one reads as a printing error.
+            color: "#b8bb26".to_string(),
+            radius: 12.0,
+            alpha: 0.55,
+        }
+    }
+}
+
 /// Typewriter blip. Knob names match `blyamk`, so a sound dialled in there
 /// with `blyamk -v` transfers over verbatim.
 #[derive(Deserialize, Clone, Debug)]
@@ -193,6 +227,8 @@ pub struct Style {
     /// Gap from the anchored edge, in logical px. Ignored on a centred axis.
     pub margin: i32,
     pub line_align: LineAlign,
+    /// `None` (absent in TOML) means no glow pass at all.
+    pub glow: Option<Glow>,
     /// Hold time AFTER the reveal finishes — not the total lifetime.
     pub timeout_ms: u64,
     pub reveal: Reveal,
@@ -213,6 +249,7 @@ impl Default for Style {
             valign: VAlign::Center,
             margin: 64,
             line_align: LineAlign::Left,
+            glow: None,
             timeout_ms: 5000,
             reveal: Reveal::Typewriter {
                 cps: d_cps(),
@@ -252,6 +289,22 @@ impl Style {
             "vanish ms is {} but the maximum is {MAX_LIFETIME_MS}",
             self.vanish.ms()
         );
+        if let Some(glow) = &self.glow {
+            // The radius is added to the padding, and the padding is subtracted
+            // from the monitor width to get the wrapping budget. Unbounded, it
+            // both sizes a device-resolution mask surface and starves the text
+            // of width until every line wraps after one word.
+            anyhow::ensure!(
+                (0.0..=128.0).contains(&glow.radius),
+                "glow.radius must be between 0 and 128, got {}",
+                glow.radius
+            );
+            anyhow::ensure!(
+                (0.0..=1.0).contains(&glow.alpha),
+                "glow.alpha must be between 0 and 1, got {}",
+                glow.alpha
+            );
+        }
         anyhow::ensure!(
             self.sound.every >= 1,
             "sound.every must be at least 1, got {}",

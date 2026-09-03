@@ -17,6 +17,9 @@ font = "Monospace 72"
 color = "#b8bb26"           # gruvbox bright green
 outline = "#1d2021"         # gruvbox bg0_hard
 # outline_width = 5.0      # omit to scale with the font size (size / 14)
+# A halo behind the glyphs, drawn UNDER the outline rather than instead of it.
+# Omit for none; radius = 0 switches off one inherited from here.
+# glow = { color = "#b8bb26", radius = 12.0, alpha = 0.55 }
 halign = "center"           # left | center | right
 valign = "center"           # top  | center | bottom
 margin = 64                 # only applies to an anchored (non-centre) axis
@@ -29,6 +32,7 @@ sound = { enabled = true, freq = 2100.0, decay_ms = 38.0, gain = 0.22, every = 1
 
 [style.alert]
 color = "#fb4934"           # gruvbox bright red
+glow = { color = "#fb4934", radius = 18.0, alpha = 0.7 }
 font = "Monospace 96"
 timeout_ms = 8000
 reveal = { kind = "typewriter", cps = 45, cursor = true }

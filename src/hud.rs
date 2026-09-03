@@ -15,7 +15,7 @@ use gtk::pango;
 use gtk::prelude::*;
 use gtk_layer_shell::{Edge, KeyboardMode, LayerShell};
 
-use crate::config::{Dir, HAlign, LineAlign, Reveal, Style, VAlign, Vanish};
+use crate::config::{Dir, Glow, HAlign, LineAlign, Reveal, Style, VAlign, Vanish};
 use crate::timeline::{Phase, Timeline};
 
 /// A message with everything already parsed and validated, so nothing can fail
@@ -26,6 +26,9 @@ pub struct Hud {
     pub timeline: Timeline,
     fill: gdk::RGBA,
     outline: Option<gdk::RGBA>,
+    /// Parsed colour plus the knobs, resolved once so the draw callback cannot
+    /// fail. `None` when the style asks for no glow, or asks for radius 0.
+    glow: Option<(gdk::RGBA, Glow)>,
     font: pango::FontDescription,
     outline_width: f64,
 }
@@ -45,6 +48,17 @@ impl Hud {
                 Some(gdk::RGBA::parse(c).with_context(|| format!("bad outline color {c:?}"))?)
             }
         };
+        // radius 0 collapses to "no glow" here rather than at every use site:
+        // it is how a preset switches off a glow inherited from the base, and
+        // a zero-radius blur would otherwise allocate a mask to paint nothing.
+        let glow = match &style.glow {
+            Some(g) if g.radius > 0.0 => {
+                let rgba = gdk::RGBA::parse(&g.color)
+                    .with_context(|| format!("bad glow color {:?}", g.color))?;
+                Some((rgba, g.clone()))
+            }
+            _ => None,
+        };
         let font = pango::FontDescription::from_string(&style.font);
         // from_string never fails — it just yields an empty family that
         // silently renders in the default font, which looks like a bug.
@@ -59,6 +73,7 @@ impl Hud {
         Ok(Hud {
             fill,
             outline,
+            glow,
             outline_width,
             font,
             timeline,
@@ -76,6 +91,9 @@ impl Hud {
     /// was clipped to a sliver whenever the last line was also the longest.
     fn pad(&self) -> f64 {
         let stroke = self.outline_width.max(0.0).ceil();
+        // The halo needs room of its own or the surface edge cuts it into a
+        // straight line, which is the one thing a glow must not have.
+        let glow = self.glow.as_ref().map_or(0.0, |(_, g)| g.radius.ceil());
         let caret = if matches!(self.style.reveal, Reveal::Typewriter { cursor: true, .. }) {
             // Upper bound on the fallback caret: half a line height, and a
             // line is not taller than about 1.4x the point size.
@@ -83,7 +101,7 @@ impl Hud {
         } else {
             0.0
         };
-        stroke + caret.ceil() + 8.0
+        stroke + glow + caret.ceil() + 8.0
     }
 
     /// `max_width` is the widest the text block may get, in logical pixels.
@@ -160,6 +178,124 @@ fn fit_width(layout: &pango::Layout, max_width: i32) {
     }
 }
 
+/// A blurred A8 image of the glyphs, ready to be used as a mask for the glow
+/// colour.
+///
+/// Built once per window. It depends only on the text, the font and the radius,
+/// all of which are fixed for the life of the process — and the vanish redraws
+/// every frame, so rebuilding it there would put a megapixel of box filter
+/// behind each one.
+///
+/// Rendered at DEVICE resolution: everything else here is in logical pixels,
+/// but a mask built at logical size and scaled up is a blur of a blur, soft on
+/// exactly the HiDPI outputs this runs on.
+fn glow_mask(
+    layout: &pango::Layout,
+    radius: f64,
+    pad: f64,
+    scale: f64,
+) -> Option<gtk::cairo::ImageSurface> {
+    let (tw, th) = layout.pixel_size();
+    let w = (((tw as f64) + pad * 2.0) * scale).ceil() as i32;
+    let h = (((th as f64) + pad * 2.0) * scale).ceil() as i32;
+    if w <= 0 || h <= 0 {
+        return None;
+    }
+    let mut surface = gtk::cairo::ImageSurface::create(gtk::cairo::Format::A8, w, h).ok()?;
+    {
+        let mcr = gtk::cairo::Context::new(&surface).ok()?;
+        mcr.scale(scale, scale);
+        mcr.translate(pad, pad);
+        // Colour is ignored in A8; only the coverage matters.
+        mcr.set_source_rgba(1.0, 1.0, 1.0, 1.0);
+        mcr.move_to(0.0, 0.0);
+        pangocairo::functions::layout_path(&mcr, layout);
+        let _ = mcr.fill();
+    }
+    surface.flush();
+
+    let stride = surface.stride() as usize;
+    let (uw, uh) = (w as usize, h as usize);
+    let mut buf = vec![0u8; uw * uh];
+    {
+        let data = surface.data().ok()?;
+        for y in 0..uh {
+            buf[y * uw..y * uw + uw].copy_from_slice(&data[y * stride..y * stride + uw]);
+        }
+    }
+    blur(&mut buf, uw, uh, (radius * scale).round() as usize);
+    {
+        let mut data = surface.data().ok()?;
+        for y in 0..uh {
+            data[y * stride..y * stride + uw].copy_from_slice(&buf[y * uw..y * uw + uw]);
+        }
+    }
+    surface.mark_dirty();
+    Some(surface)
+}
+
+/// Three box passes, which approximate a Gaussian closely enough for a halo.
+///
+/// The passes run in `f32` and quantise to a byte once at the end. Rounding
+/// back to `u8` between passes loses most of a thin stroke: traced on a single
+/// lit pixel at radius 3 it went 255 -> 36 -> 5 -> 1 while the image total
+/// fell from 255 to 41, because `255/9` is 28, `28/9` is 3 and `3/9` is 0. A
+/// glyph stem against a 12px radius is exactly that sparse, so the visible
+/// result was no halo at all.
+///
+/// Each pass is a moving sum, so the cost is one add and one subtract per
+/// pixel whatever the radius — the naive form is O(radius) per pixel and turns
+/// a 12px halo into eleven times the work for the same picture.
+fn blur(buf: &mut [u8], w: usize, h: usize, r: usize) {
+    if r == 0 || w == 0 || h == 0 {
+        return;
+    }
+    let mut a: Vec<f32> = buf.iter().map(|&v| f32::from(v)).collect();
+    let mut b = vec![0.0f32; w * h];
+    for _ in 0..3 {
+        box_pass(&a, &mut b, w, h, r, 1, w);
+        box_pass(&b, &mut a, h, w, r, w, 1);
+    }
+    for (dst, src) in buf.iter_mut().zip(a) {
+        *dst = src.round().clamp(0.0, 255.0) as u8;
+    }
+}
+
+/// One box pass along `step`, over `runs` lines of `len` pixels.
+///
+/// `step`/`lead` let the same code run horizontally and vertically: the caller
+/// swaps them rather than transposing the buffer.
+///
+/// The divisor is the FULL window even where it hangs off the edge, so the
+/// missing pixels count as zero and the halo fades into nothing. Normalising
+/// by the clamped count instead would keep the edge at full brightness and
+/// leave a bright rim around the surface.
+fn box_pass(
+    src: &[f32],
+    dst: &mut [f32],
+    len: usize,
+    runs: usize,
+    r: usize,
+    step: usize,
+    lead: usize,
+) {
+    let win = (2 * r + 1) as f32;
+    for run in 0..runs {
+        let base = run * lead;
+        let at = |i: usize| src[base + i * step];
+        let mut sum: f32 = (0..=r.min(len - 1)).map(at).sum();
+        for i in 0..len {
+            dst[base + i * step] = sum / win;
+            if i + r + 1 < len {
+                sum += at(i + r + 1);
+            }
+            if i >= r {
+                sum -= at(i - r);
+            }
+        }
+    }
+}
+
 /// Frame state shared between the tick callback and the draw callback.
 struct Frame {
     t0: Cell<Option<i64>>,
@@ -208,6 +344,14 @@ pub fn present(
     // vanish redraws every frame — re-shaping there would burn a full pango
     // layout pass 60 times a second on each output.
     let layout = Rc::new(hud.layout_for(&area, max_width));
+    // Blurred here for the same reason the layout is: both depend only on the
+    // text and the font, and the vanish redraws every frame. The scale is the
+    // monitor's, not the display's — two outputs can differ, and the mask has
+    // to match the one it will be painted on.
+    let glow = hud.glow.as_ref().and_then(|(rgba, g)| {
+        glow_mask(&layout, g.radius, pad, monitor.scale_factor() as f64)
+            .map(|mask| (Rc::new(mask), *rgba, g.alpha))
+    });
     let (tw, th) = layout.pixel_size();
     area.set_content_width(tw + (pad * 2.0) as i32);
     area.set_content_height(th + (pad * 2.0) as i32);
@@ -222,7 +366,14 @@ pub fn present(
         let hud = hud.clone();
         let frame = frame.clone();
         move |_area, cr, _w, _h| {
-            draw(cr, &hud, &layout, frame.phase.get(), frame.blink.get());
+            draw(
+                cr,
+                &hud,
+                &layout,
+                glow.as_ref().map(|(m, c, a)| (m.as_ref(), *c, *a)),
+                frame.phase.get(),
+                frame.blink.get(),
+            );
         }
     });
 
@@ -321,7 +472,14 @@ fn text_budget(monitor: &gdk::Monitor, style: &Style, pad: f64) -> i32 {
     (geom.width() - margins - (pad * 2.0) as i32).max(1)
 }
 
-fn draw(cr: &gtk::cairo::Context, hud: &Hud, layout: &pango::Layout, phase: Phase, caret_on: bool) {
+fn draw(
+    cr: &gtk::cairo::Context,
+    hud: &Hud,
+    layout: &pango::Layout,
+    glow: Option<(&gtk::cairo::ImageSurface, gdk::RGBA, f64)>,
+    phase: Phase,
+    caret_on: bool,
+) {
     let total = hud.timeline.chars();
     let (mut visible, vanish_p) = match phase {
         Phase::Reveal { chars } => (chars, 0.0),
@@ -389,6 +547,11 @@ fn draw(cr: &gtk::cairo::Context, hud: &Hud, layout: &pango::Layout, phase: Phas
         cr.push_group();
     }
 
+    if let Some((mask, colour, glow_alpha)) = glow {
+        paint_glow(
+            cr, mask, layout, hud, colour, glow_alpha, visible, total, alpha, whiten, pad,
+        );
+    }
     paint_text(cr, layout, hud, visible, total, alpha, whiten, pad);
     // Blink state is decided once per tick; recomputing it here would be a
     // second source of truth for the same thing.
@@ -418,6 +581,57 @@ fn draw(cr: &gtk::cairo::Context, hud: &Hud, layout: &pango::Layout, phase: Phas
         }
     }
 
+    let _ = cr.restore();
+}
+
+/// Paint the halo: the blurred mask, in the glow colour, under the glyphs.
+///
+/// The mask is device-resolution while the context is in logical pixels, so it
+/// is drawn under an inverse scale. `mask_surface` is offset by `-pad` because
+/// the mask was rendered with the text at `+pad` inside it, and the caller has
+/// already translated the context to the text origin.
+///
+/// The typewriter clip gets the RADIUS as its slack, not the stroke width that
+/// `paint_text` uses. That is a deliberate trade: a halo is wider than its
+/// glyph, so clipping it at the caret would slice the last typed letter's glow
+/// off with a straight vertical edge — the one artefact a glow cannot survive.
+/// The cost is that the next letter's halo bleeds a little ahead of the caret;
+/// light does that, and a blur at this radius is a smudge rather than a
+/// readable shape.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "same argument list as paint_text, plus the mask and its colour"
+)]
+fn paint_glow(
+    cr: &gtk::cairo::Context,
+    mask: &gtk::cairo::ImageSurface,
+    layout: &pango::Layout,
+    hud: &Hud,
+    colour: gdk::RGBA,
+    glow_alpha: f64,
+    visible: usize,
+    total: usize,
+    alpha: f64,
+    whiten: f64,
+    pad: f64,
+) {
+    let scale = f64::from(mask.width()) / ((f64::from(layout.pixel_size().0)) + pad * 2.0);
+    if !scale.is_finite() || scale <= 0.0 {
+        return;
+    }
+    let _ = cr.save();
+    if visible < total {
+        let caret = caret_rect(layout, &hud.text, visible);
+        let (w, _) = layout.pixel_size();
+        let slack = hud.glow.as_ref().map_or(1.0, |(_, g)| g.radius.max(1.0));
+        cr.rectangle(-pad, -pad, f64::from(w) + pad * 2.0, caret.y + pad);
+        cr.rectangle(-pad, caret.y, caret.x + slack, caret.h);
+        cr.clip();
+    }
+    set_color(cr, colour, alpha * glow_alpha, whiten);
+    cr.scale(1.0 / scale, 1.0 / scale);
+    // Positions are in mask pixels from here on, hence pad through the scale.
+    let _ = cr.mask_surface(mask, -pad * scale, -pad * scale);
     let _ = cr.restore();
 }
 
@@ -841,6 +1055,197 @@ mod tests {
             ..Style::default()
         };
         assert!(Hud::new(style, "x".into(), 1).unwrap().outline.is_none());
+    }
+
+    #[test]
+    fn the_blur_spreads_symmetrically_and_fades_at_the_edge() {
+        // One lit pixel in the middle: after three box passes the energy must
+        // sit around it evenly, and nothing may be brighter than the source.
+        let (w, h, r) = (41usize, 41usize, 4usize);
+        let mut buf = vec![0u8; w * h];
+        buf[20 * w + 20] = 255;
+        blur(&mut buf, w, h, r);
+        let at = |x: usize, y: usize| buf[y * w + x];
+        assert!(at(20, 20) > 0, "the centre went dark");
+        for d in 1..=r {
+            assert_eq!(
+                at(20 - d, 20),
+                at(20 + d, 20),
+                "asymmetric horizontally at {d}"
+            );
+            assert_eq!(
+                at(20, 20 - d),
+                at(20, 20 + d),
+                "asymmetric vertically at {d}"
+            );
+        }
+        assert!(
+            at(20, 20) < 255,
+            "the centre kept all its energy, so nothing was spread"
+        );
+        // The property that catches the bug this test was written for: a box
+        // filter moves energy around, it does not consume it. Rounding to a
+        // byte between passes took 255 down to a total of 41 and a centre of
+        // 1 — a glyph stem blurred into nothing at all.
+        let total: u32 = buf.iter().map(|&v| u32::from(v)).sum();
+        assert!(total > 200, "the blur ate the signal: 255 in, {total} out");
+        // Normalising by the full window is what makes the halo die out rather
+        // than leave a bright rim along the surface edge.
+        assert_eq!(at(0, 0), 0, "energy reached a far corner");
+    }
+
+    #[test]
+    fn a_lit_edge_pixel_does_not_wrap_to_the_other_side() {
+        // A pass that ran off the end of a row into the next one would show up
+        // here as light appearing on the opposite margin.
+        let (w, h) = (16usize, 4usize);
+        let mut buf = vec![0u8; w * h];
+        buf[w] = 255; // leftmost pixel of row 1
+        blur(&mut buf, w, h, 3);
+        assert!(buf[w + 1] > 0, "no spread along the row");
+        assert_eq!(buf[w - 1], 0, "wrapped onto the previous row");
+        assert_eq!(buf[2 * w - 1], 0, "wrapped to the far end of the row");
+    }
+
+    #[test]
+    fn padding_grows_with_the_glow_radius() {
+        // The halo is drawn past the glyph edge; without room in the surface
+        // the blur is cut into a straight line, which is the one artefact a
+        // glow cannot survive.
+        let bare = Hud::new(
+            Style {
+                font: "Sans 72".into(),
+                reveal: Reveal::Instant,
+                ..Style::default()
+            },
+            "x".into(),
+            1,
+        )
+        .unwrap();
+        let lit = Hud::new(
+            Style {
+                font: "Sans 72".into(),
+                reveal: Reveal::Instant,
+                glow: Some(crate::config::Glow {
+                    radius: 20.0,
+                    ..crate::config::Glow::default()
+                }),
+                ..Style::default()
+            },
+            "x".into(),
+            1,
+        )
+        .unwrap();
+        assert!(
+            lit.pad() >= bare.pad() + 20.0,
+            "pad {} does not cover a 20px halo over {}",
+            lit.pad(),
+            bare.pad()
+        );
+    }
+
+    #[test]
+    fn a_zero_radius_glow_is_no_glow_at_all() {
+        // How a preset takes back a glow inherited from [style.default]: TOML
+        // has no null, the same reason `outline` needs the literal "none".
+        let hud = Hud::new(
+            Style {
+                glow: Some(crate::config::Glow {
+                    radius: 0.0,
+                    ..crate::config::Glow::default()
+                }),
+                ..Style::default()
+            },
+            "x".into(),
+            1,
+        )
+        .unwrap();
+        assert!(hud.glow.is_none());
+        assert_eq!(
+            hud.pad(),
+            Hud::new(Style::default(), "x".into(), 1).unwrap().pad()
+        );
+    }
+
+    /// Coverage of one pass, rendered into an A8 target and counted.
+    fn lit_pixels(paint: impl Fn(&gtk::cairo::Context), w: i32, h: i32) -> usize {
+        let mut surface =
+            gtk::cairo::ImageSurface::create(gtk::cairo::Format::A8, w, h).expect("A8 target");
+        {
+            let cr = gtk::cairo::Context::new(&surface).expect("context");
+            paint(&cr);
+        }
+        surface.flush();
+        let data = surface.data().expect("pixels");
+        data.iter().filter(|&&v| v > 0).count()
+    }
+
+    #[test]
+    fn the_halo_reaches_pixels_the_glyphs_do_not() {
+        // Proves the glow pass paints rather than merely building a mask. The
+        // sway session reachable from here renders nothing, so this is the only
+        // place the halo is shown to arrive anywhere at all.
+        let radius = 10.0;
+        let style = Style {
+            font: "Sans 48".into(),
+            reveal: Reveal::Instant,
+            glow: Some(crate::config::Glow {
+                color: "#ffffff".into(),
+                radius,
+                alpha: 1.0,
+            }),
+            ..Style::default()
+        };
+        let hud = Hud::new(style, "o".into(), 1).expect("hud should build");
+        let layout = bare_layout(&hud.text, &hud.style.font);
+        let pad = hud.pad();
+        let (tw, th) = layout.pixel_size();
+        let (w, h) = (
+            (f64::from(tw) + pad * 2.0) as i32,
+            (f64::from(th) + pad * 2.0) as i32,
+        );
+        let mask = glow_mask(&layout, radius, pad, 1.0).expect("mask");
+        let (colour, _) = hud.glow.as_ref().expect("glow resolved");
+
+        let glyphs = lit_pixels(
+            |cr| {
+                cr.translate(pad, pad);
+                cr.move_to(0.0, 0.0);
+                pangocairo::functions::layout_path(cr, &layout);
+                let _ = cr.fill();
+            },
+            w,
+            h,
+        );
+        let halo = lit_pixels(
+            |cr| {
+                cr.translate(pad, pad);
+                paint_glow(cr, &mask, &layout, &hud, *colour, 1.0, 1, 1, 1.0, 0.0, pad);
+            },
+            w,
+            h,
+        );
+
+        assert!(glyphs > 0, "the glyph itself did not render");
+        assert!(
+            halo > glyphs,
+            "the halo covers {halo} pixels against the glyph's {glyphs}, so it \
+             is not reaching past the ink"
+        );
+    }
+
+    #[test]
+    fn the_glow_mask_is_built_at_device_resolution() {
+        // A mask built at logical size and scaled up is a blur of a blur, soft
+        // on exactly the HiDPI outputs this runs on.
+        let layout = bare_layout("glow", "Sans 40");
+        let (tw, _) = layout.pixel_size();
+        let pad = 24.0;
+        for scale in [1.0, 2.0] {
+            let mask = glow_mask(&layout, 8.0, pad, scale).expect("mask should build");
+            let want = (((tw as f64) + pad * 2.0) * scale).ceil() as i32;
+            assert_eq!(mask.width(), want, "scale {scale}");
+        }
     }
 
     #[test]

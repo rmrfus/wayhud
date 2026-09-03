@@ -128,6 +128,49 @@ keeps the visible halo a fixed fraction of the stem thickness across sizes;
 a constant that looks like a fine contour at 72pt reads as fake bold at
 24pt. Set it to pin an exact width. Must not be negative.
 .TP
+.B glow
+.RI ( table ,
+default: absent)
+.br
+A soft halo behind the glyphs:
+.BR "{ color = " \fICOLOUR\fR ", radius = " \fIF\fR ", alpha = " \fIF\fR " }" .
+Omit the key for no halo.
+.RS
+.TP
+.B color
+.RI ( colour ,
+default
+.BR \(dq#b8bb26\(dq )
+The halo's colour. Matching the fill reads as the glyph emitting light, which
+is the point; a contrasting one reads as a printing error.
+.TP
+.B radius
+(float, 0\(en128
+.IR pixels ;
+default
+.BR 12.0 )
+Blur radius.
+.B 0
+is off \- which is how a preset takes back a halo inherited from
+.BR [style.default] ,
+TOML having no null, the same reason
+.B outline
+needs the literal
+.BR \(dqnone\(dq .
+The range is enforced because this figure widens the padding, and the padding
+is subtracted from the monitor width to get the wrapping budget.
+.TP
+.B alpha
+(float, 0\(en1; default
+.BR 0.55 )
+Peak opacity of the halo where it leaves the glyph.
+.RE
+.IP
+The halo is painted
+.I under
+the outline rather than instead of it, so the two combine. It is blurred once
+per output when the message is built, not per frame.
+.TP
 .B line_align
 .RB ( left " | " center " | " right ,
 default
