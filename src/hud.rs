@@ -113,7 +113,10 @@ impl Hud {
         let stroke = self.outline_width.max(0.0).ceil();
         // The halo needs room of its own or the surface edge cuts it into a
         // straight line, which is the one thing a glow must not have.
-        let glow = self.glow.as_ref().map_or(0.0, |(_, g)| g.radius.ceil());
+        let glow = self
+            .glow
+            .as_ref()
+            .map_or(0.0, |(_, g)| blur_passes(g.radius).1.ceil());
         // Exactly the caret `caret_rect` will produce past the last character,
         // measured rather than derived from the point size, so the reserve and
         // the thing reserved for cannot disagree.
@@ -231,6 +234,7 @@ fn glow_mask(
     if w <= 0 || h <= 0 {
         return None;
     }
+    let (pass, reach) = blur_passes(radius);
     let mut surface = gtk::cairo::ImageSurface::create(gtk::cairo::Format::A8, w, h).ok()?;
     // How much of the surface the blur has to touch. Everything outside is
     // zero and stays zero, so blurring it is pure work for no pixels.
@@ -248,8 +252,16 @@ fn glow_mask(
             mcr.rectangle(-pad, -pad, f64::from(tw) + pad * 2.0, caret.y + pad);
             mcr.rectangle(-pad, caret.y, pad + caret.x, caret.h);
             mcr.clip();
-            live_w = (((pad + caret.x + radius) * scale).ceil() as i32).clamp(1, w);
-            live_h = ((((pad + caret.y + caret.h + radius) * scale).ceil()) as i32).clamp(1, h);
+            // The live region has to cover everything the clip admits, and the
+            // first rectangle admits WHOLE LINES at full width. Narrowing it to
+            // the caret's corner left the completed lines' ink unblurred past
+            // that point, which shows as the halo stopping dead mid-line.
+            live_w = if caret.y > 0.0 {
+                w
+            } else {
+                (((pad + caret.x + reach) * scale).ceil() as i32).clamp(1, w)
+            };
+            live_h = ((((pad + caret.y + caret.h + reach) * scale).ceil()) as i32).clamp(1, h);
         }
         // Colour is ignored in A8; only the coverage matters.
         mcr.set_source_rgba(1.0, 1.0, 1.0, 1.0);
@@ -268,7 +280,12 @@ fn glow_mask(
             buf[y * uw..y * uw + uw].copy_from_slice(&data[y * stride..y * stride + uw]);
         }
     }
-    blur(&mut buf, uw, uh, (radius * scale).round() as usize);
+    blur(
+        &mut buf,
+        uw,
+        uh,
+        ((pass as f64) * scale).round().max(1.0) as usize,
+    );
     {
         let mut data = surface.data().ok()?;
         for y in 0..uh {
@@ -277,6 +294,31 @@ fn glow_mask(
     }
     surface.mark_dirty();
     Some(surface)
+}
+
+/// Per-pass radius for a halo that is to reach `reach` pixels, and the reach
+/// it actually achieves.
+///
+/// Three box passes spread THREE times their radius, not one. Reserving a
+/// single radius of room, as everything here first did, truncates the halo at
+/// the surface edge: measured on a block blurred at radius 16 with 16px of
+/// margin, the very edge still reads 38 of a 221 peak — a hard rectangle
+/// around the text rather than a glow. With 3r of margin it reads 0.
+///
+/// Dividing here rather than widening the padding keeps `radius` meaning what
+/// the documentation says it means, which is how far the light carries; the
+/// alternative was a padding three times the number the user typed, taken out
+/// of the width that decides where lines wrap.
+fn blur_passes(reach: f64) -> (usize, f64) {
+    // Support of three passes of radius p is exactly 3p, and the pixel AT 3p
+    // still takes a share — so the room needed is 3p + 1 and the arithmetic
+    // runs backwards from `reach` rather than forwards from the radius. The
+    // halo then reaches at most what was asked for and is zero by the edge.
+    let pass = ((reach - 1.0) / 3.0).floor().max(0.0);
+    if pass < 1.0 {
+        return (0, 0.0);
+    }
+    (pass as usize, pass * 3.0 + 1.0)
 }
 
 /// Three box passes, which approximate a Gaussian closely enough for a halo.
@@ -729,7 +771,8 @@ fn paint_caret_glow(
     alpha: f64,
     whiten: f64,
 ) {
-    let r = radius.max(0.0);
+    let (pass, reach) = blur_passes(radius.max(0.0));
+    let r = reach;
     let w = (caret.w + r * 2.0).ceil() as i32;
     let h = (caret.h + r * 2.0).ceil() as i32;
     if w <= 0 || h <= 0 {
@@ -757,7 +800,7 @@ fn paint_caret_glow(
             buf[y * uw..y * uw + uw].copy_from_slice(&data[y * stride..y * stride + uw]);
         }
     }
-    blur(&mut buf, uw, uh, r.round() as usize);
+    blur(&mut buf, uw, uh, pass);
     {
         let Ok(mut data) = surface.data() else { return };
         for y in 0..uh {
@@ -1319,9 +1362,10 @@ mod tests {
             1,
         )
         .unwrap();
+        let reach = blur_passes(20.0).1;
         assert!(
-            lit.pad() >= bare.pad() + 20.0,
-            "pad {} does not cover a 20px halo over {}",
+            lit.pad() >= bare.pad() + reach,
+            "pad {} does not cover a {reach}px halo over {}",
             lit.pad(),
             bare.pad()
         );
@@ -1547,13 +1591,61 @@ mod tests {
         surface.flush();
         let stride = surface.stride() as usize;
         let data = surface.data().expect("pixels");
-        // A few pixels below the line box, under ink that has been revealed.
+        // A vertical run crossing the bottom of the line box, under ink that
+        // has been revealed. The old clip severed the halo exactly there, so
+        // what this looks for is a step, not a particular brightness: how far
+        // below the box the light still carries is the radius's business.
         let x = (pad + caret.x / 2.0) as usize;
-        let y = (pad + caret.y + caret.h + 4.0) as usize;
+        let from = (pad + caret.y + caret.h / 2.0) as usize;
+        let to = ((pad + caret.y + caret.h + 2.0 * radius) as usize).min(h as usize - 1);
+        let run: Vec<i32> = (from..=to)
+            .map(|y| i32::from(data[y * stride + x]))
+            .collect();
+        let peak = run.iter().copied().max().unwrap_or(0);
+        let step = run
+            .windows(2)
+            .map(|p| (p[1] - p[0]).abs())
+            .max()
+            .unwrap_or(0);
+        assert!(peak > 0, "no halo along the sampled column at all");
         assert!(
-            data[y * stride + x] > 0,
-            "the halo is cut flat at the bottom of the line being typed"
+            step * 6 < peak,
+            "the halo steps by {step} of a {peak} peak crossing the line box, \
+             which is the clip cutting it rather than a falloff"
         );
+    }
+
+    #[test]
+    fn the_blur_dies_out_inside_the_room_reserved_for_it() {
+        // Three box passes spread three times their radius. Reserving one
+        // radius of margin, which everything here first did, left the halo
+        // hitting the surface edge at 38 of a 221 peak — a hard rectangle
+        // around the text and another around the caret, which is what the
+        // screenshots showed. `blur_passes` is the whole reason those two
+        // numbers now agree.
+        for reach in [9.0f64, 24.0, 48.0] {
+            let (pass, actual) = blur_passes(reach);
+            assert!(
+                actual <= reach,
+                "reach {reach} promises less room than the {actual} it spreads"
+            );
+            let m = actual as usize;
+            let n = 60 + 2 * m;
+            let mut buf = vec![0u8; n * n];
+            for y in m..m + 60 {
+                for x in m..m + 60 {
+                    buf[y * n + x] = 255;
+                }
+            }
+            blur(&mut buf, n, n, pass);
+            let mid = n / 2;
+            assert!(
+                buf[mid * n] == 0,
+                "reach {reach}: the halo still reads {} at the surface edge",
+                buf[mid * n]
+            );
+            assert!(buf[mid * n + mid] > 0, "reach {reach}: nothing survived");
+        }
     }
 
     #[test]
@@ -1677,11 +1769,12 @@ mod tests {
             .map(|p| (p[1] - p[0]).abs())
             .max()
             .unwrap_or(0);
-        // A box blur of radius r cannot fall faster than about peak/r per
-        // pixel; a clipped edge falls the whole way in one. Half the peak is
-        // far above the former and far below the latter.
+        // Measured: a correct falloff gives a peak of 155 against a worst
+        // step of 14, a ratio of 11. The truncated halo this guards against
+        // dropped about 40% of the peak in one pixel, a ratio near 2.5 — which
+        // is why the first version of this bound, at 2, let it through.
         assert!(
-            step * 2 < peak,
+            step * 6 < peak,
             "the halo steps by {step} of a {peak} peak in one pixel, which is \
              an edge rather than a falloff"
         );
