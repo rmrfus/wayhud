@@ -22,13 +22,15 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use gtk::glib;
 
-use config::{Align, Config, Dir, Reveal, Style, Vanish, MAX_LIFETIME_MS};
+use config::{Config, Dir, HAlign, Reveal, Style, VAlign, Vanish, MAX_LIFETIME_MS};
 use hud::Hud;
 use outputs::OutputSpec;
 
 #[derive(Parser, Debug)]
 #[command(
     name = "wayhud",
+    // Straight from Cargo.toml, so the flag cannot drift from the package.
+    version,
     about = "Show a heads-up message over everything on sway",
     long_about = None
 )]
@@ -48,7 +50,7 @@ struct Cli {
     #[arg(short, long, default_value = "default")]
     style: String,
 
-    /// Pango font description, e.g. "LythMono Nerd Font 72".
+    /// Pango font description, e.g. "Monospace 72" or "FiraCode Nerd Font 72".
     #[arg(long)]
     font: Option<String>,
 
@@ -347,16 +349,16 @@ fn parse_vanish(spec: &str, fallback_ms: u64) -> Result<Vanish> {
 }
 
 /// `top-left`, `bottom`, `center`, … in either order.
-fn parse_position(s: &str) -> Result<(Align, Align)> {
-    let mut h = Align::Center;
-    let mut v = Align::Center;
+fn parse_position(s: &str) -> Result<(HAlign, VAlign)> {
+    let mut h = HAlign::Center;
+    let mut v = VAlign::Center;
     for part in s.split('-') {
         match part {
             "center" | "centre" => {}
-            "left" => h = Align::Start,
-            "right" => h = Align::End,
-            "top" => v = Align::Start,
-            "bottom" => v = Align::End,
+            "left" => h = HAlign::Left,
+            "right" => h = HAlign::Right,
+            "top" => v = VAlign::Top,
+            "bottom" => v = VAlign::Bottom,
             other => anyhow::bail!(
                 "bad --position component {other:?} \
                  (want center/top/bottom/left/right)"
@@ -374,19 +376,19 @@ mod tests {
     fn positions_parse_in_any_order() {
         assert_eq!(
             parse_position("center").unwrap(),
-            (Align::Center, Align::Center)
+            (HAlign::Center, VAlign::Center)
         );
         assert_eq!(
             parse_position("top-left").unwrap(),
-            (Align::Start, Align::Start)
+            (HAlign::Left, VAlign::Top)
         );
         assert_eq!(
             parse_position("left-top").unwrap(),
-            (Align::Start, Align::Start)
+            (HAlign::Left, VAlign::Top)
         );
         assert_eq!(
             parse_position("bottom").unwrap(),
-            (Align::Center, Align::End)
+            (HAlign::Center, VAlign::Bottom)
         );
         assert!(parse_position("diagonal").is_err());
     }

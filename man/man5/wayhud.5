@@ -57,11 +57,26 @@ or a named colour such as
 .I font
 A Pango font description \- family, optional style words, then size in
 points, e.g.
-.BR "\(dqLythMono Nerd Font 72\(dq" .
+.B "\(dqMonospace 72\(dq"
+or
+.BR "\(dqFiraCode Nerd Font 72\(dq" .
 Note that the message itself is plain text: Pango markup in it is not
 interpreted.
-The family must match fontconfig exactly; one that does not exist falls back
-to the default font without a word of warning.
+.IP
+.BR Monospace ,
+.B Sans
+and
+.B Serif
+are fontconfig generics: they resolve to whatever the system has configured
+for that role, so they work on any machine. A real family name must be spelled
+the way fontconfig spells it, which is rarely how the vendor writes it \-
+.B "\(dqFiraCode Nerd Font\(dq"
+resolves,
+.B "\(dqFira Code\(dq"
+does not. A name that does not resolve falls back to the system default
+without a word of warning, which for a HUD usually means a proportional face
+where a fixed\-width one was meant. Check one with
+.BR fc\-match (1).
 .TP
 .I pixels
 Logical pixels, i.e. before the output's scale factor is applied. On a
@@ -76,9 +91,11 @@ table.
 .B font
 .RI ( font ,
 default
-.BR "\(dqLythMono Nerd Font 72\(dq" )
+.BR "\(dqMonospace 72\(dq" )
 .br
-Typeface and size of the message.
+Typeface and size of the message. The default is the fontconfig generic
+rather than a named family, so an unconfigured install renders in the
+system's monospaced font instead of silently falling back.
 .TP
 .B color
 .RI ( colour ,
@@ -121,26 +138,26 @@ independent of where the block itself sits.
 .SS Placement
 .TP
 .B halign
-.RB ( start " | " center " | " end ,
+.RB ( left " | " center " | " right ,
 default
 .BR center )
 .br
-Horizontal placement of the text block on the output.
-.B start
-is the left edge,
-.B end
-the right.
+Horizontal placement of the text block on the output. The names are physical
+edges, not the
+.BR start / end
+of CSS and GTK: the surface is anchored to a real edge of the monitor, so
+.B left
+stays the left edge whatever the text direction. Each axis takes only its own
+names \-
+.B "halign = \(dqtop\(dq"
+is an error, not a puzzle.
 .TP
 .B valign
-.RB ( start " | " center " | " end ,
+.RB ( top " | " center " | " bottom ,
 default
 .BR center )
 .br
 Vertical placement.
-.B start
-is the top edge,
-.B end
-the bottom.
 .TP
 .B margin
 .RI ( integer ,
@@ -322,7 +339,7 @@ in the source distribution.
 .RS
 .nf
 [style.default]
-font = "LythMono Nerd Font 72"
+font = "FiraCode Nerd Font 72"   # a real family; must match fontconfig
 color = "#b8bb26"
 outline = "#1d2021"
 halign = "center"
@@ -345,9 +362,9 @@ vanish = { kind = "untype", ms = 900 }
 
 # Small, cornered, silent \- for something that just needs to be on screen.
 [style.corner]
-font = "LythMono Nerd Font 24"
-halign = "end"
-valign = "end"
+font = "Monospace 24"
+halign = "right"
+valign = "bottom"
 margin = 32
 reveal = { kind = "instant" }
 vanish = { kind = "fade", ms = 200 }

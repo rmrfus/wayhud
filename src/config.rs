@@ -4,7 +4,7 @@
 //!
 //! ```toml
 //! [style.default]
-//! font = "LythMono Nerd Font 72"
+//! font = "Monospace 72"
 //! [style.alert]
 //! color = "#ff3355"
 //! ```
@@ -29,14 +29,29 @@ use serde::Deserialize;
 /// exactly as well as a huge `--timeout` does.
 pub const MAX_LIFETIME_MS: u64 = 3_600_000;
 
-/// Where a block of text sits along one axis. Maps onto layer-shell anchors:
+/// Where a block of text sits horizontally. Maps onto layer-shell anchors:
 /// `Center` means "anchor neither edge", which the compositor centres for us.
+///
+/// Physical names, not the `start`/`end` of CSS and GTK: those are relative to
+/// the writing direction, and this is not — `Left` is `Edge::Left` in an RTL
+/// locale too. It also keeps one vocabulary across `--position`, `halign` and
+/// `line_align` instead of three.
 #[derive(Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum Align {
-    Start,
+pub enum HAlign {
+    Left,
     Center,
-    End,
+    Right,
+}
+
+/// Where a block of text sits vertically. A separate type from [`HAlign`] so
+/// `halign = "top"` is a config error rather than something to puzzle out.
+#[derive(Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum VAlign {
+    Top,
+    Center,
+    Bottom,
 }
 
 /// Alignment of lines *within* the text block (pango's own alignment).
@@ -161,8 +176,10 @@ impl Default for Sound {
 #[derive(Deserialize, Clone, Debug)]
 #[serde(default, deny_unknown_fields)]
 pub struct Style {
-    /// Pango font description. Note the family is `LythMono Nerd Font`, not
-    /// `Lyth Mono` — fontconfig silently falls back to DejaVu on the latter.
+    /// Pango font description. The default names the fontconfig generic
+    /// `Monospace`, which resolves on any box that has fonts at all; a real
+    /// family has to match fontconfig exactly, or it falls back to something
+    /// else without a word of warning.
     pub font: String,
     pub color: String,
     /// `None` (absent in TOML) means no outline pass at all.
@@ -170,8 +187,8 @@ pub struct Style {
     /// Stroke width in logical pixels. Left unset it scales with the font
     /// size, which is almost always what you want — see `Hud::outline_width`.
     pub outline_width: Option<f64>,
-    pub halign: Align,
-    pub valign: Align,
+    pub halign: HAlign,
+    pub valign: VAlign,
     /// Gap from the anchored edge, in logical px. Ignored on a centred axis.
     pub margin: i32,
     pub line_align: LineAlign,
@@ -185,12 +202,14 @@ pub struct Style {
 impl Default for Style {
     fn default() -> Self {
         Style {
-            font: "LythMono Nerd Font 72".to_string(),
+            // A generic, not a family: a HUD that renders in the wrong font
+            // on every machine but the author's is not a default.
+            font: "Monospace 72".to_string(),
             color: "#b8bb26".to_string(),         // gruvbox bright green
             outline: Some("#1d2021".to_string()), // gruvbox bg0_hard
             outline_width: None,
-            halign: Align::Center,
-            valign: Align::Center,
+            halign: HAlign::Center,
+            valign: VAlign::Center,
             margin: 64,
             line_align: LineAlign::Left,
             timeout_ms: 5000,
@@ -651,6 +670,32 @@ mod tests {
         assert_eq!(c.style("a").unwrap().outline_width, None);
         let c: Config = toml::from_str("[style.a]\noutline_width = 2.5\n").unwrap();
         assert_eq!(c.style("a").unwrap().outline_width, Some(2.5));
+    }
+
+    #[test]
+    fn each_axis_takes_only_its_own_names() {
+        // The whole point of splitting Align in two: one shared enum meant
+        // `halign` and `valign` accepted the same three words, and you had to
+        // remember which edge "start" was on for which axis.
+        let c: Config =
+            toml::from_str("[style.a]\nhalign = \"left\"\nvalign = \"bottom\"\n").unwrap();
+        let s = c.style("a").unwrap();
+        assert_eq!(s.halign, HAlign::Left);
+        assert_eq!(s.valign, VAlign::Bottom);
+
+        for bad in [
+            "halign = \"top\"",
+            "halign = \"start\"",
+            "valign = \"left\"",
+            "valign = \"end\"",
+        ] {
+            assert!(
+                toml::from_str::<Config>(&format!("[style.a]\n{bad}\n"))
+                    .ok()
+                    .is_none_or(|c| c.style("a").is_err()),
+                "{bad} should be rejected"
+            );
+        }
     }
 
     #[test]

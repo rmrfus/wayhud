@@ -25,7 +25,7 @@ keyboard events \- whatever is underneath stays usable.
 is taken from the command line; if it is omitted or given as
 .BR - ,
 the message is read from standard input instead. Piped input is read to end
-of file before anything is drawn, so a stream that never ends \- 
+of file before anything is drawn, so a stream that never ends \-
 .B journalctl \-f
 and the like \- will never display. In a command\-line
 argument the escapes
@@ -64,8 +64,9 @@ then asking
 .B i3
 or
 .B sway
-for its path. If none of those work it fails rather than guessing. A named output that does not exist is
-reported and skipped; if nothing matches at all, that is an error.
+for its path. If none of those work it fails rather than guessing. A named
+output that does not exist is reported and skipped; if nothing matches at
+all, that is an error.
 .TP
 .BR \-t ", " \-\-timeout " \fISECONDS\fR"
 How long the fully revealed text stays up. Measured from the
@@ -85,9 +86,16 @@ An unknown name is an error.
 .TP
 .BR \-\-font " \fIDESC\fR"
 Pango font description, e.g.
-.BR "\(dqLythMono Nerd Font 72\(dq" .
-Note that the family name must match fontconfig exactly; a family that does
-not resolve falls back silently to the default font.
+.B "\(dqMonospace 72\(dq"
+or
+.BR "\(dqFiraCode Nerd Font 72\(dq" .
+The default is
+.BR "\(dqMonospace 72\(dq" ,
+a fontconfig generic that resolves to whatever the system has configured for
+that role. A named family must be spelled the way fontconfig spells it, which
+is rarely how the vendor writes it; one that does not resolve falls back to
+the system default without a word of warning. Check a name with
+.BR fc\-match (1).
 .TP
 .BR \-\-color " \fICOLOUR\fR"
 Fill colour of the glyphs. Any colour GTK's CSS parser accepts:
@@ -182,6 +190,9 @@ Config file to read. Default:
 .TP
 .BR \-h ", " \-\-help
 Print a usage summary and exit.
+.TP
+.BR \-V ", " \-\-version
+Print the version and exit.
 .SH CONFIGURATION
 .B wayhud
 reads
@@ -233,8 +244,17 @@ Self\-destructing note:
 .B wayhud \-s spy \-\-vanish untype:900 \(dqTHIS MESSAGE WILL SELF DESTRUCT\(dq
 .SH ENVIRONMENT
 .TP
+.B I3SOCK
+Path to the compositor's IPC socket, checked first. Set by
+.BR i3 ;
+sway honours it too.
+.TP
 .B SWAYSOCK
-Path to sway's IPC socket. Required for
+Path to sway's IPC socket, checked when
+.B I3SOCK
+is unset. One of the two, or a working
+.BR "sway \-\-get\-socketpath" ,
+is required for
 .BR "\-\-output current" .
 .TP
 .B XDG_CONFIG_HOME

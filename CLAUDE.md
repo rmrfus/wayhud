@@ -20,8 +20,13 @@ Install the hook once per clone: `git config core.hooksPath hooks`.
 
 ## Non-negotiables
 
-- **The font family is `LythMono Nerd Font`, not `Lyth Mono`.** fontconfig
-  falls back to DejaVu Sans on the latter without a word of warning.
+- **The built-in default font is the fontconfig generic `Monospace`, not a
+  named family.** A family that does not resolve is not an error: fontconfig
+  substitutes the system default without a word of warning, and that default is
+  proportional — the one thing a HUD must not be. A named family has to be
+  spelled the way fontconfig spells it, which is rarely how the vendor writes
+  it (`fc-match "Fira Code"` lands on DejaVu Sans; `FiraCode Nerd Font` is the
+  name that resolves). Check with `fc-match` before putting one in a doc.
 - **No `GtkApplication`.** It registers on the session bus and probes for the
   `Inhibit` portal, which nothing provides under sway (`gtk.portal` declares it
   but is `UseIn=gnome`; `wlr.portal` only does Screenshot/ScreenCast), so every

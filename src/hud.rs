@@ -15,7 +15,7 @@ use gtk::pango;
 use gtk::prelude::*;
 use gtk_layer_shell::{Edge, KeyboardMode, LayerShell};
 
-use crate::config::{Align, Dir, LineAlign, Reveal, Style, Vanish};
+use crate::config::{Dir, HAlign, LineAlign, Reveal, Style, VAlign, Vanish};
 use crate::timeline::{Phase, Timeline};
 
 /// A message with everything already parsed and validated, so nothing can fail
@@ -51,7 +51,7 @@ impl Hud {
         anyhow::ensure!(
             font.family().is_some(),
             "font {:?} has no family; expected something like \
-             \"LythMono Nerd Font 72\"",
+             \"Monospace 72\"",
             style.font
         );
         let timeline = Timeline::new(&text, &style.reveal, style.timeout_ms, &style.vanish, seed);
@@ -286,26 +286,26 @@ fn apply_anchors(window: &gtk::Window, style: &Style) {
     // Anchoring neither edge of an axis is what makes the compositor centre
     // the surface on it, so Center deliberately sets nothing.
     match style.halign {
-        Align::Start => {
+        HAlign::Left => {
             window.set_anchor(Edge::Left, true);
             window.set_margin(Edge::Left, style.margin);
         }
-        Align::End => {
+        HAlign::Right => {
             window.set_anchor(Edge::Right, true);
             window.set_margin(Edge::Right, style.margin);
         }
-        Align::Center => {}
+        HAlign::Center => {}
     }
     match style.valign {
-        Align::Start => {
+        VAlign::Top => {
             window.set_anchor(Edge::Top, true);
             window.set_margin(Edge::Top, style.margin);
         }
-        Align::End => {
+        VAlign::Bottom => {
             window.set_anchor(Edge::Bottom, true);
             window.set_margin(Edge::Bottom, style.margin);
         }
-        Align::Center => {}
+        VAlign::Center => {}
     }
 }
 
@@ -313,7 +313,7 @@ fn apply_anchors(window: &gtk::Window, style: &Style) {
 fn text_budget(monitor: &gdk::Monitor, style: &Style, pad: f64) -> i32 {
     let geom = monitor.geometry();
     // Margins only bite on an anchored axis; a centred one keeps the full width.
-    let margins = if style.halign == Align::Center {
+    let margins = if style.halign == HAlign::Center {
         0
     } else {
         style.margin
@@ -605,11 +605,13 @@ mod tests {
     fn outline_scales_with_the_font_unless_pinned() {
         let w = |spec: &str| outline_width(&pango::FontDescription::from_string(spec), None);
         // 72pt keeps the hand-picked 5.0; the rest follow the same ratio.
-        assert!((w("LythMono Nerd Font 72") - 72.0 / 14.0).abs() < 1e-9);
-        assert!(w("LythMono Nerd Font 24") < w("LythMono Nerd Font 48"));
+        // A multi-word family exercises the parse too: the size is the last
+        // token, not the second one.
+        assert!((w("Some Wide Family 72") - 72.0 / 14.0).abs() < 1e-9);
+        assert!(w("Some Wide Family 24") < w("Some Wide Family 48"));
         // A configured value stays absolute, however odd.
         let pinned = outline_width(
-            &pango::FontDescription::from_string("LythMono Nerd Font 24"),
+            &pango::FontDescription::from_string("Some Wide Family 24"),
             Some(9.0),
         );
         assert_eq!(pinned, 9.0);
@@ -686,6 +688,81 @@ mod tests {
             text_width <= 600,
             "wrapped width {text_width} exceeds the budget"
         );
+    }
+
+    #[test]
+    fn the_built_in_default_font_shapes_text() {
+        // The default has to work on a box that has never heard of the
+        // author's typeface, hence the fontconfig generic rather than a named
+        // family. Whether the resolved face is really fixed-width is the
+        // machine's business, not ours — what must hold everywhere is that the
+        // description shapes something at all.
+        let hud = Hud::new(Style::default(), "wayhud".into(), 1).unwrap();
+        let (w, h) = bare_layout(&hud.text, &hud.style.font).pixel_size();
+        assert!(w > 0 && h > 0, "the default font gave a {w}x{h} layout");
+    }
+
+    #[test]
+    fn the_caret_follows_a_proportional_font() {
+        // Nothing in the geometry may assume a fixed advance. Until this
+        // test, caret_rect was never run against a shaped layout at all — the
+        // caret tests cover show_caret, which is pure boolean logic, and pad()
+        // reads the font description without resolving it. A caret placed as
+        // "column times cell width" would have sailed through both. "iWiW" is
+        // the classic pair: in a proportional face those glyphs differ.
+        let text = "iWiW";
+        let layout = bare_layout(text, "Sans 72");
+        let mut last_x = f64::NEG_INFINITY;
+        for i in 0..=text.chars().count() {
+            let c = caret_rect(&layout, text, i);
+            assert!(c.w > 0.0 && c.h > 0.0, "caret {i} is {}x{}", c.w, c.h);
+            assert!(
+                c.x > last_x,
+                "caret {i} at x={} did not advance past {last_x}",
+                c.x
+            );
+            last_x = c.x;
+        }
+    }
+
+    #[test]
+    fn padding_covers_the_caret_of_a_proportional_font() {
+        // The surface is `text width + 2 * pad` and the text starts at `pad`,
+        // so the caret past the last character has to fit in the right-hand
+        // pad — including the fallback width, which is derived from the line
+        // height rather than from any glyph.
+        let style = Style {
+            font: "Sans 72".into(),
+            reveal: TW,
+            ..Style::default()
+        };
+        let text = "iWiW";
+        let hud = Hud::new(style, text.into(), 1).unwrap();
+        let layout = bare_layout(text, &hud.style.font);
+        let (tw, _) = layout.pixel_size();
+        let end = caret_rect(&layout, text, text.chars().count());
+        assert!(
+            end.x + end.w <= tw as f64 + hud.pad(),
+            "caret ends at {} outside a {tw}px layout with {} of padding",
+            end.x + end.w,
+            hud.pad()
+        );
+    }
+
+    #[test]
+    fn a_proportional_font_wraps_and_fits_like_a_monospaced_one() {
+        // fit_width measures the shaped text rather than counting columns, so
+        // a variable advance must not push the block past its budget.
+        for font in ["Sans 36", "Monospace 36"] {
+            let layout = bare_layout(&"iW ".repeat(60), font);
+            layout.set_alignment(pango::Alignment::Center);
+            fit_width(&layout, 600);
+            let (w, _) = layout.pixel_size();
+            assert!(
+                w > 0 && w <= 600,
+                "{font}: wrapped to {w}px of a 600px budget"
+            );
+        }
     }
 
     #[test]

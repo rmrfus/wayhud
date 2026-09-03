@@ -69,9 +69,9 @@
             clippy
             rustfmt
             rust-analyzer
-            groff # man page lint: groff -ww -z man/man1/wayhud.1
+            groff # man page lint: groff -man -Tutf8 -ww -z man/man{1,5}/wayhud.*
           ];
-          # cargo doesn\'t RPATH the nix store, so binaries run straight from
+          # cargo doesn't RPATH the nix store, so binaries run straight from
           # ./target need the shared objects on the loader path.
           LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath (nativeLibs pkgs);
         };

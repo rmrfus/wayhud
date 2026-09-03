@@ -51,15 +51,28 @@ Pull it into a NixOS / home-manager flake as an input:
 
 ### From source
 
-Needs Rust, plus the GTK4 / layer-shell / PulseAudio development libraries:
-`gtk4`, `gtk4-layer-shell`, `glib`, `cairo`, `pango`, `gdk-pixbuf`, `graphene`,
-`libpulse`. On a Nix box the devShell provides all of them:
+Needs `pkg-config` and Rust 1.92 or newer (the floor comes from the gtk-rs
+crates, not from our own code), plus the development headers for GTK4,
+layer-shell and PulseAudio: `gtk4`, `gtk4-layer-shell`, `glib`, `cairo`,
+`pango`, `gdk-pixbuf`, `graphene`, `libpulse` — the `-dev` or `-devel` half of
+whatever your distribution calls them. On a Nix box `nix develop` (or `direnv
+allow`) provides the lot.
 
 ```sh
-nix develop            # or: direnv allow
-cargo build --release
-install -Dm755 target/release/wayhud ~/.local/bin/wayhud
-install -Dm644 man/man1/wayhud.1 ~/.local/share/man/man1/wayhud.1
+make                                  # cargo build --release
+sudo make install                     # into /usr/local
+make install PREFIX="$HOME/.local"    # or just for yourself
+make uninstall                        # the PREFIX you installed with
+```
+
+`make install` is there because `cargo install` copies the binary and nothing
+else. Both man pages go with it — `man 5 wayhud` is the config reference the
+rest of this README keeps pointing at. Packagers get the usual staging
+variable, and `install` never rebuilds, so running it under `sudo` cannot
+leave `target/` owned by root:
+
+```sh
+make && make install DESTDIR="$pkgdir" PREFIX=/usr
 ```
 
 ## Usage
@@ -73,7 +86,7 @@ file format.
 | `-o, --output`  | `current` | `current`, `all`, or `DP-3,eDP-1`                      |
 | `-t, --timeout` | `5`       | Hold in seconds, counted from the END of the reveal    |
 | `-s, --style`   | `default` | Preset from the config file                            |
-| `--font`        | —         | Pango description, e.g. `"LythMono Nerd Font 72"`      |
+| `--font`        | —         | Pango description, e.g. `"Monospace 72"`               |
 | `--color`       | —         | Any CSS colour GTK parses                              |
 | `--outline`     | —         | Outline colour, or `none` for flat glyphs              |
 | `--position`    | —         | `center`, `top`, `bottom-right`, …                     |
@@ -87,13 +100,25 @@ file format.
 The hold timeout is measured from the **end** of the reveal, not from start-up,
 so a slow typewriter doesn't eat into the reading time.
 
+The whole lifetime — reveal plus hold plus vanish — is capped at one hour, and a
+message that would exceed it is refused rather than shown: nothing can dismiss a
+HUD early, so a fat-fingered `--timeout`, a `--typewriter 0.01` or an absurd
+`--vanish fade:99999999` would all strand it on screen.
+
+`--jitter` needs a typewriter reveal: with `--typewriter 0`, or a preset whose
+`reveal` is instant, it is an error rather than a flag that quietly does
+nothing.
+
 `\n` and `\t` in the argument are expanded, because sway's `exec` runs through
 `sh`, which has no `$'...'`. Text arriving on stdin is used verbatim.
 
 `--output current` asks sway over its IPC socket which output has focus —
 Wayland itself gives a client no way to find that out. The socket is located
 the way `swaymsg` does it (`I3SOCK`, `SWAYSOCK`, then asking `i3` or `sway`
-for its path); if none of that works, it fails rather than guessing.
+for its path); if none of that works, it fails rather than guessing. A named
+connector that doesn't exist is reported on stderr and skipped, so
+`-o DP-3,DP-9` still shows up on DP-3 with DP-9 unplugged; matching nothing at
+all is an error.
 
 ## Vanish effects
 
@@ -101,15 +126,20 @@ for its path); if none of that works, it fails rather than guessing.
 Without `:MS` the flag keeps whatever duration the preset already had, so you
 can cycle through effects without restating the timing.
 
-| Kind        | What it looks like                                                  |
-| ----------- | ------------------------------------------------------------------- |
-| `instant`   | Gone on the frame the hold expires.                                 |
-| `fade`      | Alpha to zero.                                                      |
-| `collapse`  | CRT power-off: squashes to a bright line, blooms wider, blinks out. |
-| `wash-down` | A soft edge sweeps top to bottom, erasing as it passes.             |
-| `wash-up`   | The same, bottom to top.                                            |
-| `untype`    | The caret walks back and eats the text, blipping on the way out.    |
-| `dissolve`  | Falls apart into blocks in a fixed pseudo-random order.             |
+| `--vanish`  | In a preset                       | What it looks like                                                  |
+| ----------- | --------------------------------- | ------------------------------------------------------------------- |
+| `instant`   | `{ kind = "instant" }`            | Gone on the frame the hold expires.                                 |
+| `fade`      | `{ kind = "fade" }`               | Alpha to zero.                                                      |
+| `collapse`  | `{ kind = "collapse" }`           | CRT power-off: squashes to a bright line, blooms wider, blinks out. |
+| `wash-down` | `{ kind = "wash", dir = "down" }` | A soft edge sweeps top to bottom, erasing as it passes.             |
+| `wash-up`   | `{ kind = "wash", dir = "up" }`   | The same, bottom to top.                                            |
+| `untype`    | `{ kind = "untype" }`             | The caret walks back and eats the text, blipping on the way out.    |
+| `dissolve`  | `{ kind = "dissolve" }`           | Falls apart into blocks in a fixed pseudo-random order.             |
+
+The two spellings are not interchangeable: the flag folds the direction into
+the name, the config keeps one `wash` kind with a separate `dir`. The flag also
+takes `none` for `instant`, `crt` for `collapse`, and a bare `wash` for
+`wash-down`.
 
 `untype` is the only one that makes noise — it is typing, so it clicks. It also
 gets a caret even after an instant reveal, since otherwise characters would
@@ -117,10 +147,11 @@ disappear with nothing touching them.
 
 ## Config
 
-`$XDG_CONFIG_HOME/wayhud/config.toml`, a flat map of named presets picked with
-`--style`. A missing file is fine — every preset is then just the built-in
-defaults. A malformed one, or an unknown key, is an error: a typo gets
-reported instead of quietly doing nothing.
+`$XDG_CONFIG_HOME/wayhud/config.toml` — or `~/.config/wayhud/config.toml` when
+that variable is unset — is a flat map of named presets picked with `--style`.
+A missing file is fine: every preset is then just the built-in defaults. A
+malformed one, or an unknown key, is an error, so a typo gets reported instead
+of quietly doing nothing.
 
 `[style.default]` is the base for every other preset: a key a preset does not
 set is taken from there, and only then from the built-in default. Sub-tables
@@ -130,7 +161,7 @@ would belong to the other variant.
 
 ```toml
 [style.default]
-font = "LythMono Nerd Font 72"
+font = "FiraCode Nerd Font 72"   # a real family; must match fontconfig
 color = "#b8bb26"
 outline = "#1d2021"
 timeout_ms = 5000
@@ -147,12 +178,12 @@ vanish = { kind = "wash", ms = 300, dir = "up" }
 
 | Key             | Type                    | Default                    | Meaning                                               |
 | --------------- | ----------------------- | -------------------------- | ----------------------------------------------------- |
-| `font`          | Pango description       | `"LythMono Nerd Font 72"`  | Family and size in points                             |
+| `font`          | Pango description       | `"Monospace 72"`           | Family and size in points                             |
 | `color`         | CSS colour              | `"#b8bb26"`                | Glyph fill                                            |
 | `outline`       | CSS colour              | `"#1d2021"`                | Stroke colour; `"none"` or omit for none              |
 | `outline_width` | float, logical px       | font size / 14             | Stroke width; unset it scales with the font           |
-| `halign`        | `start` `center` `end`  | `center`                   | Horizontal placement on the output                    |
-| `valign`        | `start` `center` `end`  | `center`                   | Vertical placement                                    |
+| `halign`        | `left` `center` `right` | `center`                   | Horizontal placement on the output                    |
+| `valign`        | `top` `center` `bottom` | `center`                   | Vertical placement                                    |
 | `margin`        | int, logical px         | `64`                       | Gap from the anchored edge; ignored on a centred axis |
 | `line_align`    | `left` `center` `right` | `left`                     | Alignment of lines inside the block                   |
 | `timeout_ms`    | int, ms (max 3600000)   | `5000`                     | Hold, counted from the END of the reveal              |
@@ -166,8 +197,9 @@ default 0) staggers each keystroke gap by up to that fraction either way, so
 the typing stops sounding like a metronome; the blips use the same moments as
 the glyphs, so they cannot drift apart.
 
-`vanish` takes the kinds listed above plus `ms`; `wash` carries an extra
-`dir` of `down` or `up`.
+`vanish` takes the kinds from the *In a preset* column under
+[Vanish effects](#vanish-effects) plus `ms`; note that `wash` is one kind there
+carrying a `dir` of `down` or `up`, not the two names the flag uses.
 
 `sound` is `{ enabled, freq, decay_ms, gain, every }` — knob names match
 [blyamk](https://github.com/rmrfus/blyamk), so a sound dialled in there with
@@ -177,9 +209,20 @@ whitespace never blips.
 Full reference with every value type and range: **`man 5 wayhud`**, or
 [`config.example.toml`](config.example.toml) for a working file.
 
-Note that the font family has to match fontconfig exactly. `LythMono Nerd Font`
-resolves; `Lyth Mono` silently falls back to the default font — as does any
-other family name that doesn't exist.
+The default `Monospace` is a fontconfig generic — like `Sans` and `Serif` — so
+it resolves to whatever the system has configured for that role and works on a
+box that has never heard of your typeface.
+
+A real family name has to be spelled the way fontconfig spells it, which is
+rarely how the vendor writes it. `FiraCode Nerd Font` resolves; `Fira Code`
+falls back to the system default, and so does any other name that doesn't
+exist. Nothing warns you — and for a HUD that fallback is usually a
+proportional face where a fixed-width one was meant. Check the name first:
+
+```sh
+fc-match "Fira Code"        # DejaVu Sans — not what you asked for
+fc-match "FiraCode Nerd Font"
+```
 
 ## sway
 
@@ -208,9 +251,11 @@ reachable, the message still goes up and the failure is reported on stderr.
 
 ```sh
 nix develop
+cargo fmt --all --check
 cargo test
 cargo clippy --all-targets -- -D warnings
 groff -man -Tutf8 -ww -z man/man1/wayhud.1   # man page lint
+groff -man -Tutf8 -ww -z man/man5/wayhud.5
 ```
 
 Install the pre-commit hook once per clone — it lints the index, not the
