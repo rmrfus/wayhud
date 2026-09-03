@@ -31,6 +31,16 @@ pub struct Hud {
     glow: Option<(gdk::RGBA, Glow)>,
     font: pango::FontDescription,
     outline_width: f64,
+    /// Width of the caret drawn PAST the last character, where `index_to_pos`
+    /// reports none and `caret_rect` falls back to half a line height.
+    ///
+    /// Measured from a throwaway layout rather than guessed from the point
+    /// size. The guess was `points * 0.7`, on the stated assumption that a
+    /// line is at most 1.4x the size — DejaVu Sans is 1.57x at 72pt, so the
+    /// reserve was already 5px short of the caret it was reserving for, and
+    /// only the 8px of slack in `pad` kept the caret from being clipped at the
+    /// surface edge. A font with taller vertical metrics spends that slack.
+    caret_fallback: f64,
 }
 
 impl Hud {
@@ -68,6 +78,15 @@ impl Hud {
              \"Monospace 72\"",
             style.font
         );
+        // A layout off the default font map, not the widget's: this runs
+        // before gtk::init and only the font's own line height is wanted.
+        let caret_fallback = {
+            let ctx = pangocairo::FontMap::default().create_context();
+            let probe = pango::Layout::new(&ctx);
+            probe.set_font_description(Some(&font));
+            probe.set_text("M");
+            caret_rect(&probe, "M", 1).w
+        };
         let timeline = Timeline::new(&text, &style.reveal, style.timeout_ms, &style.vanish, seed);
         let outline_width = outline_width(&font, style.outline_width);
         Ok(Hud {
@@ -75,6 +94,7 @@ impl Hud {
             outline,
             glow,
             outline_width,
+            caret_fallback,
             font,
             timeline,
             style,
@@ -94,10 +114,11 @@ impl Hud {
         // The halo needs room of its own or the surface edge cuts it into a
         // straight line, which is the one thing a glow must not have.
         let glow = self.glow.as_ref().map_or(0.0, |(_, g)| g.radius.ceil());
+        // Exactly the caret `caret_rect` will produce past the last character,
+        // measured rather than derived from the point size, so the reserve and
+        // the thing reserved for cannot disagree.
         let caret = if matches!(self.style.reveal, Reveal::Typewriter { cursor: true, .. }) {
-            // Upper bound on the fallback caret: half a line height, and a
-            // line is not taller than about 1.4x the point size.
-            font_points(&self.font) * 0.7
+            self.caret_fallback
         } else {
             0.0
         };
@@ -939,6 +960,35 @@ mod tests {
         assert_eq!(w, 0.0);
     }
 
+    /// Families to exercise the geometry against: the two fontconfig generics,
+    /// which resolve anywhere, plus any of the named ones this machine has.
+    ///
+    /// Metrics differ per family — DejaVu Sans is 1.57x its point size per
+    /// line, Liberation Sans 1.50x — so a geometry rule that holds for one is
+    /// not shown to hold at all. A named family that is absent is skipped
+    /// rather than failed; the generics guarantee the test still runs.
+    fn probe_families() -> Vec<String> {
+        let map = pangocairo::FontMap::default();
+        let present: Vec<String> = map
+            .list_families()
+            .iter()
+            .map(|f| f.name().to_string())
+            .collect();
+        let mut out = vec!["Sans".to_string(), "Monospace".to_string()];
+        for want in [
+            "DejaVu Sans",
+            "DejaVu Serif",
+            "Liberation Sans",
+            "Noto Sans",
+            "Cantarell",
+        ] {
+            if present.iter().any(|p| p == want) {
+                out.push(want.to_string());
+            }
+        }
+        out
+    }
+
     /// A layout built straight from pangocairo, with no GTK widget and no
     /// gtk::init — enough to exercise the geometry.
     fn bare_layout(text: &str, font: &str) -> pango::Layout {
@@ -1106,21 +1156,34 @@ mod tests {
     }
 
     #[test]
-    fn padding_leaves_room_for_the_caret_past_the_last_character() {
-        // The caret drawn past the end falls back to half the line height;
-        // padding sized only for the stroke clipped it to a sliver.
-        let style = Style {
-            font: "Sans 72".into(),
-            reveal: TW,
-            ..Style::default()
-        };
-        let hud = Hud::new(style, "text".into(), 1).unwrap();
-        let caret_fallback = 72.0 * 1.4 / 2.0;
-        assert!(
-            hud.pad() >= caret_fallback,
-            "pad {} does not cover a {caret_fallback}px caret",
-            hud.pad()
-        );
+    fn padding_covers_the_caret_past_the_last_character_on_every_font() {
+        // The caret drawn past the end falls back to half the line height, and
+        // padding sized only for the stroke clipped it to a sliver. The bound
+        // used to be `points * 0.7`, on the stated assumption that a line is at
+        // most 1.4x the point size: DejaVu Sans is 1.57x, so the reserve was
+        // already 5px short of what it reserved for and only the slack in
+        // `pad` hid it. This asserts the identity instead of a number, across
+        // every family the machine has.
+        for family in probe_families() {
+            let spec = format!("{family} 72");
+            let hud = Hud::new(
+                Style {
+                    font: spec.clone(),
+                    reveal: TW,
+                    ..Style::default()
+                },
+                "text".into(),
+                1,
+            )
+            .expect("hud should build");
+            let layout = bare_layout("text", &spec);
+            let past_end = caret_rect(&layout, "text", 4).w;
+            assert!(
+                hud.pad() >= past_end,
+                "{spec}: pad {:.1} does not cover a {past_end:.1}px caret",
+                hud.pad()
+            );
+        }
     }
 
     #[test]
@@ -1380,13 +1443,18 @@ mod tests {
         // `pad` short: 60px at 72pt with no glow, 124px at radius 64, because
         // the halo widens pad. On screen that is the caret running ahead of
         // the text with a gap between the two.
+        // The tolerance is one glyph advance, not a pixel count: what the rule
+        // says is "the text reaches the caret", and how far the ink of an `m`
+        // stops short of its own advance is the font's business, not ours.
+        let advance = caret_rect(&bare_layout("mmmmm", "Sans 72"), "mmmmm", 3).w;
         let mut gaps = Vec::new();
         for radius in [0.0f64, 12.0, 64.0] {
             let (caret_x, ink_end, pad) = revealed_ink_end(radius);
             let gap = caret_x - ink_end;
             assert!(
-                gap < 12.0,
-                "radius {radius}: text ends {gap:.1}px before the caret (pad {pad:.1})"
+                gap < advance,
+                "radius {radius}: text ends {gap:.1}px before the caret, more \
+                 than the {advance:.1}px advance of a glyph (pad {pad:.1})"
             );
             gaps.push(gap);
         }
