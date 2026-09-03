@@ -356,10 +356,10 @@ impl Config {
     /// A preset's keys overlaid on the base's, before defaults are filled in.
     fn merged(&self, name: &str) -> toml::Table {
         let mut merged = self.style.get(BASE).cloned().unwrap_or_default();
-        if name != BASE {
-            if let Some(preset) = self.style.get(name) {
-                merge_into(&mut merged, preset);
-            }
+        if name != BASE
+            && let Some(preset) = self.style.get(name)
+        {
+            merge_into(&mut merged, preset);
         }
         merged
     }

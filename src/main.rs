@@ -22,7 +22,7 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use gtk::glib;
 
-use config::{Config, Dir, HAlign, Reveal, Style, VAlign, Vanish, MAX_LIFETIME_MS};
+use config::{Config, Dir, HAlign, MAX_LIFETIME_MS, Reveal, Style, VAlign, Vanish};
 use hud::Hud;
 use outputs::OutputSpec;
 
@@ -192,6 +192,11 @@ fn load_css() {
     // The overlay must not paint the theme's window background over the
     // screen; only the glyphs are ours to draw.
     provider.load_from_string("window.wayhud { background: transparent; }");
+    // The display takes its own reference to the provider, which is why this
+    // local can die at the end of the function and the rule still applies for
+    // the life of the process. Both are refcounted GObjects, so the order the
+    // two are dropped in carries no meaning — worth knowing, because the
+    // edition 2024 migration lint flags exactly that order changing here.
     if let Some(display) = gtk::gdk::Display::default() {
         gtk::style_context_add_provider_for_display(
             &display,

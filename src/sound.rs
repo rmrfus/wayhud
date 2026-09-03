@@ -9,7 +9,7 @@
 use anyhow::Result;
 
 use crate::config::Sound;
-use crate::synth::{render_f64, Params};
+use crate::synth::{Params, render_f64};
 
 const RATE: u32 = 48_000;
 

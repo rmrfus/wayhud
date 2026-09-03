@@ -5,7 +5,7 @@
 //! sway over its IPC socket and matches the answer back to a `gdk::Monitor` by
 //! connector name (`DP-4`), which is the one identifier both sides agree on.
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use gtk::gdk;
 use gtk::prelude::*;
 
