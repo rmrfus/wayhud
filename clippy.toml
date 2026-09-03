@@ -1,0 +1,7 @@
+# Serves the [lints.clippy] table in Cargo.toml. Those restriction lints are
+# the panic policy made machine-checkable, but a test asserting on a Result is
+# supposed to unwrap it — without these the suite would be the only thing the
+# policy ever caught.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true

@@ -26,6 +26,19 @@ toml = "0.8"
 libpulse-binding = "2"
 libpulse-simple-binding = "2"
 
+# The no-panic rule, machine-checked. These live in clippy's `restriction`
+# group, which is allow-by-default and is not switched on by `clippy::all` or
+# `pedantic` — each has to be named. `warn` plus the `-D warnings` CI already
+# passes is what makes them fail; a crate-level `#![deny]` would poison
+# #[cfg(test)] code and need an #[allow] on every test. See clippy.toml for the
+# in-test exemptions.
+[lints.clippy]
+unwrap_used = "warn"
+expect_used = "warn"
+panic = "warn"
+todo = "warn"
+unimplemented = "warn"
+
 [profile.release]
 lto = true
 strip = true
