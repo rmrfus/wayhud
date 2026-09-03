@@ -18,6 +18,16 @@ use gtk_layer_shell::{Edge, KeyboardMode, LayerShell};
 use crate::config::{Dir, Glow, HAlign, LineAlign, Reveal, Style, VAlign, Vanish};
 use crate::timeline::{Phase, Timeline};
 
+/// Transparent room around the text, in logical pixels.
+///
+/// Two numbers rather than one because what needs the room differs by axis:
+/// see `Hud::pad`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Pad {
+    x: f64,
+    y: f64,
+}
+
 /// A message with everything already parsed and validated, so nothing can fail
 /// once we're inside a draw callback.
 pub struct Hud {
@@ -128,10 +138,11 @@ impl Hud {
     /// width there, so `draw` falls back to half the line height. A fixed 8px
     /// was never enough for that — at 72pt the caret is about 45px wide and
     /// was clipped to a sliver whenever the last line was also the longest.
-    fn pad(&self) -> f64 {
+    fn pad(&self) -> Pad {
         let stroke = self.outline_width.max(0.0).ceil();
         // The halo needs room of its own or the surface edge cuts it into a
-        // straight line, which is the one thing a glow must not have.
+        // straight line, which is the one thing a glow must not have. It goes
+        // out in every direction, so both axes pay for it.
         let glow = self
             .glow
             .as_ref()
@@ -139,12 +150,22 @@ impl Hud {
         // Exactly the caret `caret_rect` will produce past the last character,
         // measured rather than derived from the point size, so the reserve and
         // the thing reserved for cannot disagree.
+        //
+        // Horizontal only. The caret is drawn to the RIGHT of the last
+        // character and never above or below it — its height is the line box,
+        // which is inside the text block already. Charging the vertical axis
+        // for it, which this did, buys transparent surface nobody can use:
+        // 55px of it at Sans 48, showing as a gap under a bottom-anchored
+        // message even at `margin = 0`.
         let caret = if matches!(self.style.reveal, Reveal::Typewriter { cursor: true, .. }) {
-            self.caret_width
+            self.caret_width.ceil()
         } else {
             0.0
         };
-        stroke + glow + caret.ceil() + 8.0
+        Pad {
+            x: stroke + glow + caret + 8.0,
+            y: stroke + glow + 8.0,
+        }
     }
 
     /// `max_width` is the widest the text block may get, in logical pixels.
@@ -244,12 +265,12 @@ fn glow_mask(
     visible: usize,
     total: usize,
     radius: f64,
-    pad: f64,
+    pad: Pad,
     scale: f64,
 ) -> Option<gtk::cairo::ImageSurface> {
     let (tw, th) = layout.pixel_size();
-    let w = (((tw as f64) + pad * 2.0) * scale).ceil() as i32;
-    let h = (((th as f64) + pad * 2.0) * scale).ceil() as i32;
+    let w = (((tw as f64) + pad.x * 2.0) * scale).ceil() as i32;
+    let h = (((th as f64) + pad.y * 2.0) * scale).ceil() as i32;
     if w <= 0 || h <= 0 {
         return None;
     }
@@ -261,15 +282,15 @@ fn glow_mask(
     {
         let mcr = gtk::cairo::Context::new(&surface).ok()?;
         mcr.scale(scale, scale);
-        mcr.translate(pad, pad);
+        mcr.translate(pad.x, pad.y);
         if visible < total {
             let (cx, cy, ch) = caret_pos(layout, text, visible);
             // Whole lines above the caret, then the typed part of its line.
             // No slack past the caret: an unrevealed glyph must not reach the
             // mask at all, and no room below the line box either, because the
             // blur will carry the halo past it on its own.
-            mcr.rectangle(-pad, -pad, f64::from(tw) + pad * 2.0, cy + pad);
-            mcr.rectangle(-pad, cy, pad + cx, ch);
+            mcr.rectangle(-pad.x, -pad.y, f64::from(tw) + pad.x * 2.0, cy + pad.y);
+            mcr.rectangle(-pad.x, cy, pad.x + cx, ch);
             mcr.clip();
             // The live region has to cover everything the clip admits, and the
             // first rectangle admits WHOLE LINES at full width. Narrowing it to
@@ -278,9 +299,9 @@ fn glow_mask(
             live_w = if cy > 0.0 {
                 w
             } else {
-                (((pad + cx + reach) * scale).ceil() as i32).clamp(1, w)
+                (((pad.x + cx + reach) * scale).ceil() as i32).clamp(1, w)
             };
-            live_h = ((((pad + cy + ch + reach) * scale).ceil()) as i32).clamp(1, h);
+            live_h = ((((pad.y + cy + ch + reach) * scale).ceil()) as i32).clamp(1, h);
         }
         // Colour is ignored in A8; only the coverage matters.
         mcr.set_source_rgba(1.0, 1.0, 1.0, 1.0);
@@ -483,8 +504,8 @@ pub fn present(
     let glow_cache: RefCell<(usize, Option<Rc<gtk::cairo::ImageSurface>>)> =
         RefCell::new((usize::MAX, None));
     let (tw, th) = layout.pixel_size();
-    area.set_content_width(tw + (pad * 2.0) as i32);
-    area.set_content_height(th + (pad * 2.0) as i32);
+    area.set_content_width(tw + (pad.x * 2.0) as i32);
+    area.set_content_height(th + (pad.y * 2.0) as i32);
 
     let frame = Rc::new(Frame {
         t0: Cell::new(None),
@@ -609,7 +630,7 @@ fn apply_anchors(window: &gtk::Window, style: &Style) {
 }
 
 /// How wide the text may be on this monitor, in logical pixels.
-fn text_budget(monitor: &gdk::Monitor, style: &Style, pad: f64) -> i32 {
+fn text_budget(monitor: &gdk::Monitor, style: &Style, pad: Pad) -> i32 {
     let geom = monitor.geometry();
     // Margins only bite on an anchored axis; a centred one keeps the full width.
     let margins = if style.halign == HAlign::Center {
@@ -617,7 +638,7 @@ fn text_budget(monitor: &gdk::Monitor, style: &Style, pad: f64) -> i32 {
     } else {
         style.margin
     };
-    (geom.width() - margins - (pad * 2.0) as i32).max(1)
+    (geom.width() - margins - (pad.x * 2.0) as i32).max(1)
 }
 
 fn draw(
@@ -650,7 +671,7 @@ fn draw(
     }
 
     let _ = cr.save();
-    cr.translate(pad, pad);
+    cr.translate(pad.x, pad.y);
 
     // Effects that change geometry or colour, applied before painting.
     let mut alpha = 1.0_f64;
@@ -724,7 +745,7 @@ fn draw(
             Vanish::Dissolve { .. } => {
                 let (tw, _) = layout.pixel_size();
                 if let Some(surface) = dissolve_mask(tw as f64, th, pad, vanish_p) {
-                    let _ = cr.mask_surface(&surface, -pad, -pad);
+                    let _ = cr.mask_surface(&surface, -pad.x, -pad.y);
                 }
             }
             // Unreachable given how `masked` is computed, but a panic inside a
@@ -756,9 +777,9 @@ fn paint_glow(
     // frame's, since nothing here needs the two apart.
     alpha: f64,
     whiten: f64,
-    pad: f64,
+    pad: Pad,
 ) {
-    let scale = f64::from(mask.width()) / ((f64::from(layout.pixel_size().0)) + pad * 2.0);
+    let scale = f64::from(mask.width()) / ((f64::from(layout.pixel_size().0)) + pad.x * 2.0);
     if !scale.is_finite() || scale <= 0.0 {
         return;
     }
@@ -766,7 +787,7 @@ fn paint_glow(
     set_color(cr, colour, alpha, whiten);
     cr.scale(1.0 / scale, 1.0 / scale);
     // Positions are in mask pixels from here on, hence pad through the scale.
-    let _ = cr.mask_surface(mask, -pad * scale, -pad * scale);
+    let _ = cr.mask_surface(mask, -pad.x * scale, -pad.y * scale);
     let _ = cr.restore();
 }
 
@@ -845,7 +866,7 @@ fn paint_text(
     total: usize,
     alpha: f64,
     whiten: f64,
-    pad: f64,
+    pad: Pad,
 ) {
     if visible < total {
         let (cx, cy, ch) = caret_pos(layout, &hud.text, visible);
@@ -861,8 +882,8 @@ fn paint_text(
         // ending `pad` short of the caret — measured at 60px at 72pt with no
         // glow at all, and it grew with the glow radius, which widens pad.
         let slack = hud.outline_width.max(1.0);
-        cr.rectangle(-pad, -pad, w as f64 + pad * 2.0, cy + pad);
-        cr.rectangle(-pad, cy, pad + cx + slack, ch);
+        cr.rectangle(-pad.x, -pad.y, w as f64 + pad.x * 2.0, cy + pad.y);
+        cr.rectangle(-pad.x, cy, pad.x + cx + slack, ch);
         cr.clip();
     }
 
@@ -906,9 +927,9 @@ fn wash_gradient(th: f64, p: f64, dir: Dir) -> gtk::cairo::LinearGradient {
 /// An A8 mask of surviving blocks. Each block has a fixed pseudo-random
 /// lifetime, so the decay pattern is stable frame to frame instead of
 /// re-randomising into static.
-fn dissolve_mask(tw: f64, th: f64, pad: f64, p: f64) -> Option<gtk::cairo::ImageSurface> {
-    let w = (tw + pad * 2.0).ceil() as i32;
-    let h = (th + pad * 2.0).ceil() as i32;
+fn dissolve_mask(tw: f64, th: f64, pad: Pad, p: f64) -> Option<gtk::cairo::ImageSurface> {
+    let w = (tw + pad.x * 2.0).ceil() as i32;
+    let h = (th + pad.y * 2.0).ceil() as i32;
     if w <= 0 || h <= 0 {
         return None;
     }
@@ -1188,10 +1209,10 @@ mod tests {
         let (tw, _) = layout.pixel_size();
         let end = caret_rect(&layout, text, text.chars().count(), hud.caret_width);
         assert!(
-            end.x + end.w <= tw as f64 + hud.pad(),
-            "caret ends at {} outside a {tw}px layout with {} of padding",
+            end.x + end.w <= tw as f64 + hud.pad().x,
+            "caret ends at {} outside a {tw}px layout with {} of horizontal padding",
             end.x + end.w,
-            hud.pad()
+            hud.pad().x
         );
     }
 
@@ -1266,9 +1287,18 @@ mod tests {
             .expect("hud should build");
             let past_end = hud.caret_width;
             assert!(
-                hud.pad() >= past_end,
-                "{spec}: pad {:.1} does not cover a {past_end:.1}px caret",
-                hud.pad()
+                hud.pad().x >= past_end,
+                "{spec}: horizontal pad {:.1} does not cover a {past_end:.1}px caret",
+                hud.pad().x
+            );
+            // And the vertical axis must NOT pay for it: the caret is drawn to
+            // the right of the last character, never below it, so reserving its
+            // width there is transparent surface showing as a gap under a
+            // bottom-anchored message.
+            assert!(
+                hud.pad().y < past_end,
+                "{spec}: vertical pad {:.1} is reserving caret room it cannot use",
+                hud.pad().y
             );
         }
     }
@@ -1282,7 +1312,7 @@ mod tests {
         };
         let hud = Hud::new(style, "text".into(), 1).unwrap();
         assert!(
-            hud.pad() < 30.0,
+            hud.pad().x < 30.0,
             "instant reveal should not reserve caret room"
         );
     }
@@ -1378,9 +1408,10 @@ mod tests {
         )
         .unwrap();
         let reach = blur_passes(20.0).1;
+        // Both axes: a halo goes out in every direction, unlike the caret.
         assert!(
-            lit.pad() >= bare.pad() + reach,
-            "pad {} does not cover a {reach}px halo over {}",
+            lit.pad().x >= bare.pad().x + reach && lit.pad().y >= bare.pad().y + reach,
+            "pad {:?} does not cover a {reach}px halo over {:?}",
             lit.pad(),
             bare.pad()
         );
@@ -1443,15 +1474,15 @@ mod tests {
         let pad = hud.pad();
         let (tw, th) = layout.pixel_size();
         let (w, h) = (
-            (f64::from(tw) + pad * 2.0) as i32,
-            (f64::from(th) + pad * 2.0) as i32,
+            (f64::from(tw) + pad.x * 2.0) as i32,
+            (f64::from(th) + pad.y * 2.0) as i32,
         );
         let mask = glow_mask(&layout, &hud.text, 1, 1, radius, pad, 1.0).expect("mask");
         let (colour, _) = hud.glow.as_ref().expect("glow resolved");
 
         let glyphs = lit_pixels(
             |cr| {
-                cr.translate(pad, pad);
+                cr.translate(pad.x, pad.y);
                 cr.move_to(0.0, 0.0);
                 pangocairo::functions::layout_path(cr, &layout);
                 let _ = cr.fill();
@@ -1461,7 +1492,7 @@ mod tests {
         );
         let halo = lit_pixels(
             |cr| {
-                cr.translate(pad, pad);
+                cr.translate(pad.x, pad.y);
                 paint_glow(cr, &mask, &layout, *colour, 1.0, 0.0, pad);
             },
             w,
@@ -1497,8 +1528,8 @@ mod tests {
         let pad = hud.pad();
         let (tw, th) = layout.pixel_size();
         let (w, h) = (
-            (f64::from(tw) + pad * 2.0) as i32,
-            (f64::from(th) + pad * 2.0) as i32,
+            (f64::from(tw) + pad.x * 2.0) as i32,
+            (f64::from(th) + pad.y * 2.0) as i32,
         );
         let visible = 3usize;
         let caret = caret_rect(&layout, text, visible, hud.caret_width);
@@ -1506,7 +1537,7 @@ mod tests {
             gtk::cairo::ImageSurface::create(gtk::cairo::Format::A8, w, h).expect("target");
         {
             let cr = gtk::cairo::Context::new(&surface).expect("context");
-            cr.translate(pad, pad);
+            cr.translate(pad.x, pad.y);
             paint_text(&cr, &layout, &hud, visible, text.len(), 1.0, 0.0, pad);
         }
         surface.flush();
@@ -1520,7 +1551,7 @@ mod tests {
                 }
             }
         }
-        (caret.x, rightmost as f64 - pad, pad)
+        (caret.x, rightmost as f64 - pad.x, pad.x)
     }
 
     #[test]
@@ -1580,8 +1611,8 @@ mod tests {
         let pad = hud.pad();
         let (tw, th) = layout.pixel_size();
         let (w, h) = (
-            (f64::from(tw) + pad * 2.0) as i32,
-            (f64::from(th) + pad * 2.0) as i32,
+            (f64::from(tw) + pad.x * 2.0) as i32,
+            (f64::from(th) + pad.y * 2.0) as i32,
         );
         let mask = glow_mask(
             &layout,
@@ -1601,7 +1632,7 @@ mod tests {
             gtk::cairo::ImageSurface::create(gtk::cairo::Format::A8, w, h).expect("target");
         {
             let cr = gtk::cairo::Context::new(&surface).expect("context");
-            cr.translate(pad, pad);
+            cr.translate(pad.x, pad.y);
             paint_glow(&cr, &mask, &layout, *colour, 1.0, 0.0, pad);
         }
         surface.flush();
@@ -1611,9 +1642,9 @@ mod tests {
         // has been revealed. The old clip severed the halo exactly there, so
         // what this looks for is a step, not a particular brightness: how far
         // below the box the light still carries is the radius's business.
-        let x = (pad + caret.x / 2.0) as usize;
-        let from = (pad + caret.y + caret.h / 2.0) as usize;
-        let to = ((pad + caret.y + caret.h + 2.0 * radius) as usize).min(h as usize - 1);
+        let x = (pad.x + caret.x / 2.0) as usize;
+        let from = (pad.y + caret.y + caret.h / 2.0) as usize;
+        let to = ((pad.y + caret.y + caret.h + 2.0 * radius) as usize).min(h as usize - 1);
         let run: Vec<i32> = (from..=to)
             .map(|y| i32::from(data[y * stride + x]))
             .collect();
@@ -1792,8 +1823,8 @@ mod tests {
         let pad = hud.pad();
         let (tw, th) = layout.pixel_size();
         let (w, h) = (
-            (f64::from(tw) + pad * 2.0) as i32,
-            (f64::from(th) + pad * 2.0) as i32,
+            (f64::from(tw) + pad.x * 2.0) as i32,
+            (f64::from(th) + pad.y * 2.0) as i32,
         );
         let visible = 3usize;
         let mask = glow_mask(&layout, text, visible, 5, radius, pad, 1.0).expect("mask");
@@ -1804,7 +1835,7 @@ mod tests {
             gtk::cairo::ImageSurface::create(gtk::cairo::Format::A8, w, h).expect("target");
         {
             let cr = gtk::cairo::Context::new(&surface).expect("context");
-            cr.translate(pad, pad);
+            cr.translate(pad.x, pad.y);
             paint_glow(&cr, &mask, &layout, *colour, 1.0, 0.0, pad);
         }
         surface.flush();
@@ -1813,9 +1844,9 @@ mod tests {
 
         // A horizontal run through the middle of the line, from inside the
         // revealed text to well past where the clip used to cut.
-        let y = (pad + caret.y + caret.h / 2.0) as usize;
-        let from = (pad + caret.x - 3.0 * radius).max(0.0) as usize;
-        let to = ((pad + caret.x + 3.0 * radius) as usize).min(w as usize - 1);
+        let y = (pad.y + caret.y + caret.h / 2.0) as usize;
+        let from = (pad.x + caret.x - 3.0 * radius).max(0.0) as usize;
+        let to = ((pad.x + caret.x + 3.0 * radius) as usize).min(w as usize - 1);
         let run: Vec<i32> = (from..=to)
             .map(|x| i32::from(data[y * stride + x]))
             .collect();
@@ -1843,11 +1874,11 @@ mod tests {
         // on exactly the HiDPI outputs this runs on.
         let layout = bare_layout("glow", "Sans 40");
         let (tw, _) = layout.pixel_size();
-        let pad = 24.0;
+        let pad = Pad { x: 24.0, y: 24.0 };
         for scale in [1.0, 2.0] {
             let mask =
                 glow_mask(&layout, "glow", 4, 4, 8.0, pad, scale).expect("mask should build");
-            let want = (((tw as f64) + pad * 2.0) * scale).ceil() as i32;
+            let want = (((tw as f64) + pad.x * 2.0) * scale).ceil() as i32;
             assert_eq!(mask.width(), want, "scale {scale}");
         }
     }
