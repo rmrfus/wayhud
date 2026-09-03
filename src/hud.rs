@@ -31,16 +31,28 @@ pub struct Hud {
     glow: Option<(gdk::RGBA, Glow)>,
     font: pango::FontDescription,
     outline_width: f64,
-    /// Width of the caret drawn PAST the last character, where `index_to_pos`
-    /// reports none and `caret_rect` falls back to half a line height.
+    /// Width of the caret, in logical pixels — a property of the FONT, not of
+    /// the character the caret happens to sit on.
     ///
-    /// Measured from a throwaway layout rather than guessed from the point
-    /// size. The guess was `points * 0.7`, on the stated assumption that a
-    /// line is at most 1.4x the size — DejaVu Sans is 1.57x at 72pt, so the
-    /// reserve was already 5px short of the caret it was reserving for, and
-    /// only the 8px of slack in `pad` kept the caret from being clipped at the
-    /// surface edge. A font with taller vertical metrics spends that slack.
-    caret_fallback: f64,
+    /// It used to be the advance of the next glyph, described as "exactly the
+    /// terminal block width". On a monospaced face that is true; on a
+    /// proportional one there is no cell, and the caret swung from 27px before
+    /// an `i` to 94px before an `m` on DejaVu Sans at 72pt — a caret that
+    /// changes size every keystroke, which reads as a fault rather than as a
+    /// terminal.
+    ///
+    /// The cell is taken as the advance of `M`. On a monospaced face that IS
+    /// the cell — 58 either way — so the choice only bites on a proportional
+    /// one, and there a wide letter beats pango's `approximate_char_width`:
+    /// the average is 49.8 against DejaVu Sans's 83 for `M`, so an averaged
+    /// caret would sit narrower than most of the glyphs that land in it, which
+    /// is the same fault in a milder form.
+    ///
+    /// Also measured rather than derived from the point size, which `pad` used
+    /// to do at `points * 0.7` on the assumption that a line is at most 1.4x
+    /// the size. DejaVu Sans is 1.57x, so that reserve was already short of
+    /// the caret it reserved for.
+    caret_width: f64,
 }
 
 impl Hud {
@@ -78,14 +90,21 @@ impl Hud {
              \"Monospace 72\"",
             style.font
         );
-        // A layout off the default font map, not the widget's: this runs
-        // before gtk::init and only the font's own line height is wanted.
-        let caret_fallback = {
+        // A context off the default font map, not the widget's: this runs
+        // before gtk::init and only the font's own metrics are wanted.
+        let caret_width = {
             let ctx = pangocairo::FontMap::default().create_context();
             let probe = pango::Layout::new(&ctx);
             probe.set_font_description(Some(&font));
             probe.set_text("M");
-            caret_rect(&probe, "M", 1).w
+            let (cell, _, line) = caret_pos(&probe, "M", 1);
+            if cell > 0.0 {
+                cell
+            } else {
+                // A font that shapes no `M` at all: half a line, which is what
+                // the caret past the end of the text used to fall back to.
+                line * 0.5
+            }
         };
         let timeline = Timeline::new(&text, &style.reveal, style.timeout_ms, &style.vanish, seed);
         let outline_width = outline_width(&font, style.outline_width);
@@ -94,7 +113,7 @@ impl Hud {
             outline,
             glow,
             outline_width,
-            caret_fallback,
+            caret_width,
             font,
             timeline,
             style,
@@ -121,7 +140,7 @@ impl Hud {
         // measured rather than derived from the point size, so the reserve and
         // the thing reserved for cannot disagree.
         let caret = if matches!(self.style.reveal, Reveal::Typewriter { cursor: true, .. }) {
-            self.caret_fallback
+            self.caret_width
         } else {
             0.0
         };
@@ -244,24 +263,24 @@ fn glow_mask(
         mcr.scale(scale, scale);
         mcr.translate(pad, pad);
         if visible < total {
-            let caret = caret_rect(layout, text, visible);
+            let (cx, cy, ch) = caret_pos(layout, text, visible);
             // Whole lines above the caret, then the typed part of its line.
             // No slack past the caret: an unrevealed glyph must not reach the
             // mask at all, and no room below the line box either, because the
             // blur will carry the halo past it on its own.
-            mcr.rectangle(-pad, -pad, f64::from(tw) + pad * 2.0, caret.y + pad);
-            mcr.rectangle(-pad, caret.y, pad + caret.x, caret.h);
+            mcr.rectangle(-pad, -pad, f64::from(tw) + pad * 2.0, cy + pad);
+            mcr.rectangle(-pad, cy, pad + cx, ch);
             mcr.clip();
             // The live region has to cover everything the clip admits, and the
             // first rectangle admits WHOLE LINES at full width. Narrowing it to
             // the caret's corner left the completed lines' ink unblurred past
             // that point, which shows as the halo stopping dead mid-line.
-            live_w = if caret.y > 0.0 {
+            live_w = if cy > 0.0 {
                 w
             } else {
-                (((pad + caret.x + reach) * scale).ceil() as i32).clamp(1, w)
+                (((pad + cx + reach) * scale).ceil() as i32).clamp(1, w)
             };
-            live_h = ((((pad + caret.y + caret.h + reach) * scale).ceil()) as i32).clamp(1, h);
+            live_h = ((((pad + cy + ch + reach) * scale).ceil()) as i32).clamp(1, h);
         }
         // Colour is ignored in A8; only the coverage matters.
         mcr.set_source_rgba(1.0, 1.0, 1.0, 1.0);
@@ -681,7 +700,7 @@ fn draw(
     }
     // Blink state is decided once per tick; recomputing it here would be a
     // second source of truth for the same thing.
-    let caret = caret_on.then(|| caret_rect(layout, &hud.text, visible));
+    let caret = caret_on.then(|| caret_rect(layout, &hud.text, visible, hud.caret_width));
     // Every halo goes down before any ink, so the caret's light sits under the
     // glyphs rather than over the letter it follows.
     if let (Some(caret), Some((_, colour, glow_alpha)), Some((_, g))) =
@@ -829,7 +848,7 @@ fn paint_text(
     pad: f64,
 ) {
     if visible < total {
-        let caret = caret_rect(layout, &hud.text, visible);
+        let (cx, cy, ch) = caret_pos(layout, &hud.text, visible);
         let (w, _) = layout.pixel_size();
         // Everything above the caret's line, plus the typed part of that line.
         // The slack past the caret is the stroke, not `pad`: pad also reserves
@@ -842,8 +861,8 @@ fn paint_text(
         // ending `pad` short of the caret — measured at 60px at 72pt with no
         // glow at all, and it grew with the glow radius, which widens pad.
         let slack = hud.outline_width.max(1.0);
-        cr.rectangle(-pad, -pad, w as f64 + pad * 2.0, caret.y + pad);
-        cr.rectangle(-pad, caret.y, pad + caret.x + slack, caret.h);
+        cr.rectangle(-pad, -pad, w as f64 + pad * 2.0, cy + pad);
+        cr.rectangle(-pad, cy, pad + cx + slack, ch);
         cr.clip();
     }
 
@@ -930,7 +949,9 @@ struct Caret {
     h: f64,
 }
 
-fn caret_rect(layout: &pango::Layout, text: &str, visible_chars: usize) -> Caret {
+/// Where the caret sits and how tall the line is — everything about it except
+/// how wide it should be drawn, which is not a property of this position.
+fn caret_pos(layout: &pango::Layout, text: &str, visible_chars: usize) -> (f64, f64, f64) {
     let byte = text
         .char_indices()
         .nth(visible_chars)
@@ -941,20 +962,15 @@ fn caret_rect(layout: &pango::Layout, text: &str, visible_chars: usize) -> Caret
     // A right-to-left run reports a negative width with x at the right edge;
     // normalising here keeps the clip rectangle from collapsing.
     let x = (r.x() as f64 + r.width().min(0) as f64) / sc;
-    let h = r.height() as f64 / sc;
-    // index_to_pos gives the advance of the character the caret sits ON, which
-    // is exactly the terminal block width. Past the end of the text there is no
-    // such character, so fall back to half the line height.
-    let w = match (r.width().abs() as f64) / sc {
-        w if w > 0.0 => w,
-        _ => h * 0.5,
-    };
-    Caret {
-        x,
-        y: r.y() as f64 / sc,
-        w,
-        h,
-    }
+    (x, r.y() as f64 / sc, r.height() as f64 / sc)
+}
+
+/// The caret to draw: its position, plus a width that stays the same from one
+/// keystroke to the next — see `Hud::caret_width` for why it is not the
+/// advance of the glyph underneath.
+fn caret_rect(layout: &pango::Layout, text: &str, visible_chars: usize, width: f64) -> Caret {
+    let (x, y, h) = caret_pos(layout, text, visible_chars);
+    Caret { x, y, w: width, h }
 }
 
 fn show_caret(reveal: &Reveal, vanish: &Vanish, phase: Phase, t_ms: f64) -> bool {
@@ -1144,7 +1160,7 @@ mod tests {
         let layout = bare_layout(text, "Sans 72");
         let mut last_x = f64::NEG_INFINITY;
         for i in 0..=text.chars().count() {
-            let c = caret_rect(&layout, text, i);
+            let c = caret_rect(&layout, text, i, 40.0);
             assert!(c.w > 0.0 && c.h > 0.0, "caret {i} is {}x{}", c.w, c.h);
             assert!(
                 c.x > last_x,
@@ -1170,7 +1186,7 @@ mod tests {
         let hud = Hud::new(style, text.into(), 1).unwrap();
         let layout = bare_layout(text, &hud.style.font);
         let (tw, _) = layout.pixel_size();
-        let end = caret_rect(&layout, text, text.chars().count());
+        let end = caret_rect(&layout, text, text.chars().count(), hud.caret_width);
         assert!(
             end.x + end.w <= tw as f64 + hud.pad(),
             "caret ends at {} outside a {tw}px layout with {} of padding",
@@ -1248,8 +1264,7 @@ mod tests {
                 1,
             )
             .expect("hud should build");
-            let layout = bare_layout("text", &spec);
-            let past_end = caret_rect(&layout, "text", 4).w;
+            let past_end = hud.caret_width;
             assert!(
                 hud.pad() >= past_end,
                 "{spec}: pad {:.1} does not cover a {past_end:.1}px caret",
@@ -1486,7 +1501,7 @@ mod tests {
             (f64::from(th) + pad * 2.0) as i32,
         );
         let visible = 3usize;
-        let caret = caret_rect(&layout, text, visible);
+        let caret = caret_rect(&layout, text, visible, hud.caret_width);
         let mut surface =
             gtk::cairo::ImageSurface::create(gtk::cairo::Format::A8, w, h).expect("target");
         {
@@ -1519,7 +1534,8 @@ mod tests {
         // The tolerance is one glyph advance, not a pixel count: what the rule
         // says is "the text reaches the caret", and how far the ink of an `m`
         // stops short of its own advance is the font's business, not ours.
-        let advance = caret_rect(&bare_layout("mmmmm", "Sans 72"), "mmmmm", 3).w;
+        let advance = caret_pos(&bare_layout("mmmmm", "Sans 72"), "mmmmm", 4).0
+            - caret_pos(&bare_layout("mmmmm", "Sans 72"), "mmmmm", 3).0;
         let mut gaps = Vec::new();
         for radius in [0.0f64, 12.0, 64.0] {
             let (caret_x, ink_end, pad) = revealed_ink_end(radius);
@@ -1579,7 +1595,7 @@ mod tests {
         .expect("mask");
         let (colour, _) = hud.glow.as_ref().expect("glow");
         let visible = 3usize;
-        let caret = caret_rect(&layout, text, visible);
+        let caret = caret_rect(&layout, text, visible, hud.caret_width);
 
         let mut surface =
             gtk::cairo::ImageSurface::create(gtk::cairo::Format::A8, w, h).expect("target");
@@ -1645,6 +1661,47 @@ mod tests {
                 buf[mid * n]
             );
             assert!(buf[mid * n + mid] > 0, "reach {reach}: nothing survived");
+        }
+    }
+
+    #[test]
+    fn the_caret_keeps_one_width_across_the_message() {
+        // It used to take the advance of the glyph it sat on, described as
+        // "exactly the terminal block width" — true on a monospaced face, and
+        // on a proportional one a caret that swung from 27px before an `i` to
+        // 94px before an `m` on DejaVu Sans at 72pt, resizing every keystroke.
+        for family in probe_families() {
+            let spec = format!("{family} 72");
+            let text = "iWmil";
+            let hud = Hud::new(
+                Style {
+                    font: spec.clone(),
+                    reveal: TW,
+                    ..Style::default()
+                },
+                text.into(),
+                1,
+            )
+            .expect("hud should build");
+            let layout = bare_layout(text, &spec);
+            let widths: Vec<f64> = (0..=text.chars().count())
+                .map(|i| caret_rect(&layout, text, i, hud.caret_width).w)
+                .collect();
+            assert!(
+                widths.iter().all(|w| (w - widths[0]).abs() < f64::EPSILON),
+                "{spec}: the caret changes width along the message: {widths:?}"
+            );
+            assert!(widths[0] > 0.0, "{spec}: the caret has no width at all");
+            // And it has to read as a cell rather than a hairline. On a
+            // monospaced face every glyph is the cell, so the bound is "not
+            // narrower than the narrowest glyph"; on a proportional one that
+            // is what an averaged width sinks towards.
+            let narrow = caret_pos(&bare_layout("i", &spec), "i", 1).0;
+            assert!(
+                widths[0] >= narrow,
+                "{spec}: caret {} is narrower than an `i` at {narrow}",
+                widths[0]
+            );
         }
     }
 
@@ -1741,7 +1798,7 @@ mod tests {
         let visible = 3usize;
         let mask = glow_mask(&layout, text, visible, 5, radius, pad, 1.0).expect("mask");
         let (colour, _) = hud.glow.as_ref().expect("glow");
-        let caret = caret_rect(&layout, text, visible);
+        let caret = caret_rect(&layout, text, visible, hud.caret_width);
 
         let mut surface =
             gtk::cairo::ImageSurface::create(gtk::cairo::Format::A8, w, h).expect("target");
