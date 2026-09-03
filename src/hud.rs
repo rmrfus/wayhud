@@ -632,8 +632,20 @@ fn paint_glow(
         let (w, _) = layout.pixel_size();
         // Width from the surface edge, hence the leading `pad` — see the same
         // pair in `paint_text` for what omitting it costs.
+        //
+        // The caret's line gets a radius of extra height. A halo reaches that
+        // far past the line box, and clipping at the box cut it flat along the
+        // bottom of whichever line was being typed, until the message finished
+        // and the clip went away entirely. Above the line the first rectangle
+        // already let it through, so this only restores the symmetry.
+        //
+        // On a multi-line message the extra height also admits the top of the
+        // NEXT line's halo, which has not been typed. That is the far tail of
+        // the blur against the bright near-glyph band the clip was severing,
+        // and every other edge here already lets a halo cross it.
+        let below = hud.glow.as_ref().map_or(0.0, |(_, g)| g.radius);
         cr.rectangle(-pad, -pad, f64::from(w) + pad * 2.0, caret.y + pad);
-        cr.rectangle(-pad, caret.y, pad + caret.x, caret.h);
+        cr.rectangle(-pad, caret.y, pad + caret.x, caret.h + below);
         cr.clip();
     }
     set_color(cr, colour, alpha * glow_alpha, whiten);
@@ -1380,6 +1392,69 @@ mod tests {
         assert!(
             widest - tightest < 2.0,
             "the gap still follows the glow radius: {gaps:?}"
+        );
+    }
+
+    #[test]
+    fn the_halo_survives_below_the_line_being_typed() {
+        // The clip for the caret's line was exactly its line box, but the halo
+        // reaches a radius past it. Above, the rectangle covering the earlier
+        // lines let it through; below there was nothing, so the glow was cut
+        // flat along the bottom of the line until the whole message finished.
+        let radius = 14.0;
+        let style = Style {
+            font: "Sans 72".into(),
+            reveal: TW,
+            outline: None,
+            glow: Some(crate::config::Glow {
+                color: "#ffffff".into(),
+                radius,
+                alpha: 1.0,
+            }),
+            ..Style::default()
+        };
+        let text = "mmmmm";
+        let hud = Hud::new(style, text.into(), 1).expect("hud");
+        let layout = bare_layout(text, &hud.style.font);
+        let pad = hud.pad();
+        let (tw, th) = layout.pixel_size();
+        let (w, h) = (
+            (f64::from(tw) + pad * 2.0) as i32,
+            (f64::from(th) + pad * 2.0) as i32,
+        );
+        let mask = glow_mask(&layout, radius, pad, 1.0).expect("mask");
+        let (colour, _) = hud.glow.as_ref().expect("glow");
+        let visible = 3usize;
+        let caret = caret_rect(&layout, text, visible);
+
+        let mut surface =
+            gtk::cairo::ImageSurface::create(gtk::cairo::Format::A8, w, h).expect("target");
+        {
+            let cr = gtk::cairo::Context::new(&surface).expect("context");
+            cr.translate(pad, pad);
+            paint_glow(
+                &cr,
+                &mask,
+                &layout,
+                &hud,
+                *colour,
+                1.0,
+                visible,
+                text.len(),
+                1.0,
+                0.0,
+                pad,
+            );
+        }
+        surface.flush();
+        let stride = surface.stride() as usize;
+        let data = surface.data().expect("pixels");
+        // A few pixels below the line box, under ink that has been revealed.
+        let x = (pad + caret.x / 2.0) as usize;
+        let y = (pad + caret.y + caret.h + 4.0) as usize;
+        assert!(
+            data[y * stride + x] > 0,
+            "the halo is cut flat at the bottom of the line being typed"
         );
     }
 
