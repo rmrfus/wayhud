@@ -22,7 +22,7 @@ outline = "#1d2021"         # gruvbox bg0_hard
 # glow = { color = "#b8bb26", radius = 12.0, alpha = 0.55 }
 halign = "center"           # left | center | right
 valign = "center"           # top  | center | bottom
-margin = 64                 # only applies to an anchored (non-centre) axis
+margin = 64                 # to the SURFACE, not the text; anchored axes only
 line_align = "left"         # alignment of lines inside the block
 timeout_ms = 5000           # hold AFTER the reveal finishes
 reveal = { kind = "typewriter", cps = 28, cursor = true }

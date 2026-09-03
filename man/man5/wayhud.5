@@ -212,9 +212,22 @@ Vertical placement.
 default
 .BR 64 )
 .br
-Gap between the text block and the edge it is anchored to. An axis set to
+Gap between the SURFACE and the edge it is anchored to \- not between the text
+and that edge. The surface carries transparent padding for the outline, the
+halo and the caret, so the text sits that much further in again, and the
+visible distance is this value plus that padding.
+.IP
+The padding differs by axis and is not a constant: it grows with
+.BR glow.radius ,
+with the font size, and horizontally with the caret. So raising
+.B glow.radius
+moves an anchored message away from its edge without
+.B margin
+having been touched.
+.IP
+An axis set to
 .B center
-is centred by the compositor and ignores this value.
+is centred by the compositor and ignores this value entirely.
 .SS Timing
 .TP
 .B timeout_ms

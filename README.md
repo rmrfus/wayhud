@@ -192,7 +192,7 @@ vanish = { kind = "wash", ms = 300, dir = "up" }
 | `glow`          | table                   | —                          | Halo behind the glyphs; omit for none                 |
 | `halign`        | `left` `center` `right` | `center`                   | Horizontal placement on the output                    |
 | `valign`        | `top` `center` `bottom` | `center`                   | Vertical placement                                    |
-| `margin`        | int, logical px         | `64`                       | Gap from the anchored edge; ignored on a centred axis |
+| `margin`        | int, logical px         | `64`                       | Gap from the anchored edge to the *surface*; see below |
 | `line_align`    | `left` `center` `right` | `left`                     | Alignment of lines inside the block                   |
 | `timeout_ms`    | int, ms (max 3600000)   | `5000`                     | Hold, counted from the END of the reveal              |
 | `reveal`        | table                   | typewriter, 28 cps, cursor | How the text appears                                  |
@@ -208,6 +208,12 @@ the glyphs, so they cannot drift apart.
 `vanish` takes the kinds from the *In a preset* column under
 [Vanish effects](#vanish-effects) plus `ms`; note that `wash` is one kind there
 carrying a `dir` of `down` or `up`, not the two names the flag uses.
+
+`margin` is measured to the surface, not to the text. The surface carries
+transparent padding for the outline, the halo and the caret, so the visible
+distance from the screen edge is `margin` plus that padding — which differs by
+axis and grows with `glow.radius` and the font size. Raising the glow radius
+therefore moves an anchored message away from its edge on its own.
 
 `glow` is `{ color, radius, alpha }` — a blurred halo painted *under* the
 outline, not instead of it, so a dark contour with a coloured bloom outside it
