@@ -50,7 +50,11 @@
           '';
 
           meta = with pkgs.lib; {
-            description = "Heads-up text overlay for sway, with typewriter reveal";
+            # Same line as Cargo.toml's `description`, which is the canonical
+            # one: this is what `nix search` and `nix profile list` render, and
+            # a package described differently in two places is one a stranger
+            # cannot match up.
+            description = "Layer-shell text overlay for sway — sci-fi HUD messages";
             homepage = "https://github.com/rmrfus/wayhud";
             license = licenses.mit;
             mainProgram = "wayhud";
