@@ -15,6 +15,7 @@
 //! font to be copy-pasted into every preset in the file.
 
 use std::collections::HashMap;
+use std::ffi::OsString;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
@@ -385,9 +386,29 @@ impl Config {
 }
 
 fn default_path() -> Option<PathBuf> {
-    let base = std::env::var_os("XDG_CONFIG_HOME")
+    config_path(
+        std::env::var_os("XDG_CONFIG_HOME"),
+        std::env::var_os("HOME"),
+    )
+}
+
+/// Where the config lives, given the two variables.
+///
+/// Split out from `default_path` so the rules can be exercised without
+/// mutating the process environment: `set_var` is unsound once a second thread
+/// exists, which is why edition 2024 made it an unsafe fn.
+///
+/// The XDG spec uses `XDG_CONFIG_HOME` only when it holds an ABSOLUTE path,
+/// and that is not pedantry. `XDG_CONFIG_HOME=""` taken at face value becomes
+/// `PathBuf::from("")`, so the lookup turns into `./wayhud/config.toml` —
+/// relative to whatever directory the process happened to start in, with the
+/// real config in $HOME silently ignored. An empty path is not absolute, so
+/// one predicate covers both the empty and the relative case.
+fn config_path(xdg: Option<OsString>, home: Option<OsString>) -> Option<PathBuf> {
+    let base = xdg
         .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))?;
+        .filter(|p| p.is_absolute())
+        .or_else(|| home.map(|h| PathBuf::from(h).join(".config")))?;
     Some(base.join("wayhud").join("config.toml"))
 }
 
@@ -649,6 +670,30 @@ mod tests {
             toml::from_str("[style.bad]\ntimeout_ms = 99999999999\n[style.good]\n").unwrap();
         assert!(c.style("good").is_ok());
         assert!(c.style("bad").is_err());
+    }
+
+    #[test]
+    fn an_unusable_xdg_config_home_falls_back_to_home() {
+        // XDG_CONFIG_HOME="" used to resolve to ./wayhud/config.toml, relative
+        // to wherever the process started, while the real config in $HOME went
+        // unread. The spec uses the variable only when it is an absolute path.
+        let home = || Some(OsString::from("/home/u"));
+        let want_home = PathBuf::from("/home/u/.config/wayhud/config.toml");
+
+        assert_eq!(
+            config_path(Some(OsString::from("/xdg")), home()),
+            Some(PathBuf::from("/xdg/wayhud/config.toml")),
+            "an absolute XDG_CONFIG_HOME must win"
+        );
+        for unusable in ["", "relative/path", "."] {
+            assert_eq!(
+                config_path(Some(OsString::from(unusable)), home()),
+                Some(want_home.clone()),
+                "XDG_CONFIG_HOME={unusable:?} must fall back to $HOME"
+            );
+        }
+        assert_eq!(config_path(None, home()), Some(want_home));
+        assert_eq!(config_path(None, None), None, "neither set: no path at all");
     }
 
     #[test]

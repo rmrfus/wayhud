@@ -3,3 +3,11 @@
 # [licenses] are for shipping to strangers and for legal review; this is a
 # personal overlay for one compositor.
 [advisories]
+# Both of these are defaults that are not what anyone wants: a yanked crate
+# only warns, so a build can keep pulling something the author withdrew.
+yanked = "deny"
+
+[sources]
+# Absent entirely by default, which means a dependency pulled from any git
+# fork passes the scan without a word.
+unknown-git = "deny"

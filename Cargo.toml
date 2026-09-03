@@ -2,9 +2,12 @@
 name = "wayhud"
 version = "0.4.0"
 edition = "2024"
-# Set by the gtk-rs family, which is the whole dependency tree's ceiling; our
-# own code only needs 1.87 (is_multiple_of). Without this, a stable-but-older
-# toolchain fails deep inside a dependency instead of saying what it needs.
+# The gtk-rs family is the ceiling: pango, pangocairo and gtk4-sys all declare
+# 1.92. Our own floor is lower but not as low as it looks — edition 2024 needs
+# 1.85 and the let-chain in Config::merged needs 1.88. Stating it does not
+# improve the error an older toolchain gives; what it buys is clippy gating its
+# suggestions on it, incompatible_msrv firing against it, and the resolver
+# picking dependency versions that respect it.
 rust-version = "1.92"
 description = "Layer-shell text overlay for sway — sci-fi HUD messages"
 license = "MIT"
@@ -36,8 +39,19 @@ libpulse-simple-binding = "2"
 unwrap_used = "warn"
 expect_used = "warn"
 panic = "warn"
+unreachable = "warn"
 todo = "warn"
 unimplemented = "warn"
+dbg_macro = "warn"
+# These four are what keep the rest of the house rules from being prose: `exit`
+# enforces returning ExitCode rather than killing the process mid-stack,
+# `print_stdout` the "stdout is payload, diagnostics go to stderr" rule, and
+# the unsafe pair the SAFETY-comment rule. Unenforced, each is a convention a
+# green build can violate.
+exit = "warn"
+print_stdout = "warn"
+undocumented_unsafe_blocks = "warn"
+multiple_unsafe_ops_per_block = "warn"
 
 [profile.release]
 lto = true

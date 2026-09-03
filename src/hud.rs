@@ -422,7 +422,10 @@ fn draw(cr: &gtk::cairo::Context, hud: &Hud, layout: &pango::Layout, phase: Phas
 }
 
 /// Stroke + fill the glyphs, clipped to whatever has been typed so far.
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one draw call: layout, phase and the two colour modifiers travel together"
+)]
 fn paint_text(
     cr: &gtk::cairo::Context,
     layout: &pango::Layout,
