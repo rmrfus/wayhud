@@ -630,8 +630,10 @@ fn paint_glow(
     if visible < total {
         let caret = caret_rect(layout, &hud.text, visible);
         let (w, _) = layout.pixel_size();
+        // Width from the surface edge, hence the leading `pad` — see the same
+        // pair in `paint_text` for what omitting it costs.
         cr.rectangle(-pad, -pad, f64::from(w) + pad * 2.0, caret.y + pad);
-        cr.rectangle(-pad, caret.y, caret.x, caret.h);
+        cr.rectangle(-pad, caret.y, pad + caret.x, caret.h);
         cr.clip();
     }
     set_color(cr, colour, alpha * glow_alpha, whiten);
@@ -721,12 +723,18 @@ fn paint_text(
         let caret = caret_rect(layout, &hud.text, visible);
         let (w, _) = layout.pixel_size();
         // Everything above the caret's line, plus the typed part of that line.
-        // The slack on the right is the stroke, not `pad`: pad also reserves
-        // caret room, and using it here would reveal the leading edge of the
-        // next glyph before it has been "typed".
+        // The slack past the caret is the stroke, not `pad`: pad also reserves
+        // caret and halo room, and using it here would reveal the leading edge
+        // of the next glyph before it has been "typed".
+        //
+        // Both rectangles start at the surface edge, so the third argument is
+        // a WIDTH that has to carry that `pad` as well as the distance to the
+        // caret. Writing the right edge there instead left the revealed text
+        // ending `pad` short of the caret — measured at 60px at 72pt with no
+        // glow at all, and it grew with the glow radius, which widens pad.
         let slack = hud.outline_width.max(1.0);
         cr.rectangle(-pad, -pad, w as f64 + pad * 2.0, caret.y + pad);
-        cr.rectangle(-pad, caret.y, caret.x + slack, caret.h);
+        cr.rectangle(-pad, caret.y, pad + caret.x + slack, caret.h);
         cr.clip();
     }
 
@@ -1298,6 +1306,80 @@ mod tests {
             halo > glyphs,
             "the halo covers {halo} pixels against the glyph's {glyphs}, so it \
              is not reaching past the ink"
+        );
+    }
+
+    /// Rightmost lit pixel of a partial reveal, in text coordinates, plus the
+    /// caret position it is supposed to reach and the padding in force.
+    fn revealed_ink_end(radius: f64) -> (f64, f64, f64) {
+        let glow = (radius > 0.0).then(|| crate::config::Glow {
+            color: "#ffffff".into(),
+            radius,
+            alpha: 1.0,
+        });
+        let style = Style {
+            font: "Sans 72".into(),
+            reveal: TW,
+            outline: None,
+            glow,
+            ..Style::default()
+        };
+        let text = "mmmmm";
+        let hud = Hud::new(style, text.into(), 1).expect("hud should build");
+        let layout = bare_layout(text, &hud.style.font);
+        let pad = hud.pad();
+        let (tw, th) = layout.pixel_size();
+        let (w, h) = (
+            (f64::from(tw) + pad * 2.0) as i32,
+            (f64::from(th) + pad * 2.0) as i32,
+        );
+        let visible = 3usize;
+        let caret = caret_rect(&layout, text, visible);
+        let mut surface =
+            gtk::cairo::ImageSurface::create(gtk::cairo::Format::A8, w, h).expect("target");
+        {
+            let cr = gtk::cairo::Context::new(&surface).expect("context");
+            cr.translate(pad, pad);
+            paint_text(&cr, &layout, &hud, visible, text.len(), 1.0, 0.0, pad);
+        }
+        surface.flush();
+        let stride = surface.stride() as usize;
+        let data = surface.data().expect("pixels");
+        let mut rightmost = 0usize;
+        for y in 0..(h as usize) {
+            for x in 0..(w as usize) {
+                if data[y * stride + x] > 0 {
+                    rightmost = rightmost.max(x);
+                }
+            }
+        }
+        (caret.x, rightmost as f64 - pad, pad)
+    }
+
+    #[test]
+    fn the_revealed_text_reaches_the_caret_whatever_the_padding() {
+        // The clip rectangles start at the surface edge, so the third argument
+        // is a width that must carry `pad` as well as the distance to the
+        // caret. Written as a right edge instead, the revealed text ended
+        // `pad` short: 60px at 72pt with no glow, 124px at radius 64, because
+        // the halo widens pad. On screen that is the caret running ahead of
+        // the text with a gap between the two.
+        let mut gaps = Vec::new();
+        for radius in [0.0f64, 12.0, 64.0] {
+            let (caret_x, ink_end, pad) = revealed_ink_end(radius);
+            let gap = caret_x - ink_end;
+            assert!(
+                gap < 12.0,
+                "radius {radius}: text ends {gap:.1}px before the caret (pad {pad:.1})"
+            );
+            gaps.push(gap);
+        }
+        // The defect was the gap tracking pad, so pin that it no longer does.
+        let widest = gaps.iter().fold(f64::MIN, |a, &b| a.max(b));
+        let tightest = gaps.iter().fold(f64::MAX, |a, &b| a.min(b));
+        assert!(
+            widest - tightest < 2.0,
+            "the gap still follows the glow radius: {gaps:?}"
         );
     }
 
