@@ -274,6 +274,28 @@ is unset. One of the two, or a working
 is required for
 .BR "\-\-output current" .
 .TP
+.B GSK_RENDERER
+Not read by
+.B wayhud
+itself, but worth knowing about. Under GTK's default Vulkan renderer some
+compositors make every repaint log
+.RB \(dq vkQueuePresentKHR ():
+.I A swapchain no longer matches the surface properties exactly
+\(dq on standard error. That is
+.BR VK_SUBOPTIMAL_KHR ,
+a Vulkan
+.I success
+code \- the frame was presented, and only GDK's decision to report it as a
+warning makes it visible. Setting
+.B GSK_RENDERER
+to
+.B opengl
+or
+.B cairo
+silences it with no visible difference to the overlay. It is not set here,
+because choosing a renderer for the whole graphics stack is too large a
+decision to make on behalf of a message that says everything worked.
+.TP
 .B XDG_CONFIG_HOME
 Base directory for the config file, used only when it holds an
 .I absolute

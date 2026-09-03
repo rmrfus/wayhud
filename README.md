@@ -246,6 +246,21 @@ bindsym $mod+Shift+h exec wayhud "LOCKED\nBACK IN 5"
 
 The layer namespace is `wayhud`, so compositor rules can key off it.
 
+Under GTK's default Vulkan renderer some compositors log a `vkQueuePresentKHR`
+warning about the swapchain "no longer matching the surface properties" on
+every repaint. It is `VK_SUBOPTIMAL_KHR`, a Vulkan *success* code — the frame
+went up, and only GDK's choice to report it as a warning makes it visible.
+`GSK_RENDERER=opengl` or `GSK_RENDERER=cairo` silences it with no visible
+difference:
+
+```
+bindsym $mod+Shift+h exec env GSK_RENDERER=opengl wayhud "LOCKED"
+```
+
+wayhud does not set it itself: picking a renderer for the whole graphics stack
+is a larger decision than the message deserves, and on a box where GL is broken
+and Vulkan is not it would trade a warning for a blank screen.
+
 Two concurrent invocations are two processes and two layer surfaces, which the
 compositor stacks. That is deliberate: this is a one-shot tool, not a daemon.
 
