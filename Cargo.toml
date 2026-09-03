@@ -8,6 +8,8 @@ edition = "2021"
 rust-version = "1.92"
 description = "Layer-shell text overlay for sway — sci-fi HUD messages"
 license = "MIT"
+homepage = "https://github.com/rmrfus/wayhud"
+repository = "https://github.com/rmrfus/wayhud"
 
 [dependencies]
 anyhow = "1"

@@ -90,8 +90,8 @@ impl Hud {
     /// Without it a long line silently runs off both edges of the output:
     /// the layer surface is sized from the text, and the compositor clips
     /// whatever doesn't fit on screen.
-    fn layout_for(&self, widget: &impl IsA<gtk::Widget>, max_width: i32) -> pango::Layout {
-        let layout = widget.as_ref().create_pango_layout(Some(&self.text));
+    fn layout_for(&self, widget: &gtk::DrawingArea, max_width: i32) -> pango::Layout {
+        let layout = widget.create_pango_layout(Some(&self.text));
         layout.set_font_description(Some(&self.font));
         layout.set_alignment(match self.style.line_align {
             LineAlign::Left => pango::Alignment::Left,

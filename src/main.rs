@@ -203,15 +203,16 @@ fn load_css() {
 
 /// Text comes from argv, or from stdin when argv is empty or "-".
 fn read_text(cli: &Cli) -> Result<String> {
-    let from_stdin = match cli.text.as_deref() {
-        None | Some("-") => true,
-        Some(_) => false,
-    };
-    if !from_stdin {
-        let raw = cli.text.clone().unwrap();
-        // Only argv gets unescaped. Text piped in already carries real
-        // newlines, and mangling a backslash out of a log line would be rude.
-        return Ok(if cli.raw { raw } else { unescape(&raw) });
+    // Only argv gets unescaped. Text piped in already carries real newlines,
+    // and mangling a backslash out of a log line would be rude. Filtering the
+    // Option here rather than testing a flag and unwrapping keeps the "argv
+    // holds a message" case a single binding that cannot be None.
+    if let Some(raw) = cli.text.as_deref().filter(|t| *t != "-") {
+        return Ok(if cli.raw {
+            raw.to_string()
+        } else {
+            unescape(raw)
+        });
     }
     if std::io::stdin().is_terminal() {
         anyhow::bail!("no text given (pass it as an argument or pipe it in)");

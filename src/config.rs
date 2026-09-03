@@ -75,7 +75,7 @@ pub enum Reveal {
         #[serde(default = "d_cps")]
         cps: f64,
         /// Draw a block cursor at the write head.
-        #[serde(default = "d_true")]
+        #[serde(default = "d_cursor")]
         cursor: bool,
         /// Randomise each gap by up to +/- this fraction of it. 0 is a
         /// metronome; 0.3 varies every gap by up to 30% either way. Clamped
@@ -324,9 +324,8 @@ impl Config {
     /// A malformed file IS an error — silently falling back to defaults on a
     /// typo means debugging a HUD that ignores half its own settings.
     pub fn load(path: Option<PathBuf>) -> Result<Config> {
-        let path = match path.or_else(default_path) {
-            Some(p) => p,
-            None => return Ok(Config::default()),
+        let Some(path) = path.or_else(default_path) else {
+            return Ok(Config::default());
         };
         let text = match std::fs::read_to_string(&path) {
             Ok(t) => t,
@@ -395,7 +394,7 @@ fn default_path() -> Option<PathBuf> {
 fn d_cps() -> f64 {
     28.0
 }
-fn d_true() -> bool {
+fn d_cursor() -> bool {
     true
 }
 /// The compiled-in vanish duration, also used as the fallback when a preset

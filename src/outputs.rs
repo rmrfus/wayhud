@@ -87,13 +87,14 @@ pub fn resolve(display: &gdk::Display, spec: &OutputSpec) -> Result<Vec<gdk::Mon
 fn by_names(monitors: &[gdk::Monitor], names: &[String]) -> Vec<gdk::Monitor> {
     let mut out = Vec::new();
     for name in names {
-        match monitors
+        let Some(monitor) = monitors
             .iter()
             .find(|m| m.connector().is_some_and(|c| c == *name))
-        {
-            Some(m) => out.push(m.clone()),
-            None => eprintln!("wayhud: no output named {name}"),
-        }
+        else {
+            eprintln!("wayhud: no output named {name}");
+            continue;
+        };
+        out.push(monitor.clone());
     }
     out
 }
