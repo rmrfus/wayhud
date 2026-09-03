@@ -113,6 +113,11 @@ nothing.
 `\n` and `\t` in the argument are expanded, because sway's `exec` runs through
 `sh`, which has no `$'...'`. Text arriving on stdin is used verbatim.
 
+Trailing newlines are dropped either way. Pango turns one into an empty final
+line and counts it in the height, so the surface is a line taller than the
+message and the compositor centres the phantom along with it — everything sits
+half a line off.
+
 `--output current` asks sway over its IPC socket which output has focus —
 Wayland itself gives a client no way to find that out. The socket is located
 the way `swaymsg` does it (`I3SOCK`, `SWAYSOCK`, then asking `i3` or `sway`

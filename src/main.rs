@@ -220,23 +220,33 @@ fn read_text(cli: &Cli) -> Result<String> {
     // and mangling a backslash out of a log line would be rude. Filtering the
     // Option here rather than testing a flag and unwrapping keeps the "argv
     // holds a message" case a single binding that cannot be None.
-    if let Some(raw) = cli.text.as_deref().filter(|t| *t != "-") {
-        return Ok(if cli.raw {
+    let text = if let Some(raw) = cli.text.as_deref().filter(|t| *t != "-") {
+        if cli.raw {
             raw.to_string()
         } else {
             unescape(raw)
-        });
-    }
-    if std::io::stdin().is_terminal() {
-        anyhow::bail!("no text given (pass it as an argument or pipe it in)");
-    }
-    let mut buf = String::new();
-    std::io::stdin()
-        .read_to_string(&mut buf)
-        .context("reading stdin")?;
-    // A trailing newline from `echo` would otherwise render as a blank line
-    // and shove the text off-centre.
-    Ok(buf.trim_end_matches('\n').to_string())
+        }
+    } else {
+        if std::io::stdin().is_terminal() {
+            anyhow::bail!("no text given (pass it as an argument or pipe it in)");
+        }
+        let mut buf = String::new();
+        std::io::stdin()
+            .read_to_string(&mut buf)
+            .context("reading stdin")?;
+        buf
+    };
+    // Whichever way the text arrived. Pango turns a trailing newline into an
+    // empty final line and counts it in the layout height, so the surface ends
+    // up a line taller than anything visible: the compositor centres that
+    // phantom along with the text and the whole message sits half a line off.
+    // The caret then finishes the reveal parked at x=0 on that empty line,
+    // adrift from the message it belongs to.
+    //
+    // Trimming only the piped side, which is what this did, made
+    // `wayhud "a\n"` and `printf 'a\n' | wayhud` render differently for no
+    // reason a user could see.
+    Ok(text.trim_end_matches('\n').to_string())
 }
 
 /// Expand the escapes the shell won't. sway runs `exec` through `sh`, which
@@ -714,6 +724,25 @@ mod tests {
         // A Windows-ish path must not lose its backslash to a silent drop.
         assert_eq!(unescape("C:\\dir"), "C:\\dir");
         assert_eq!(unescape("trailing\\"), "trailing\\");
+    }
+
+    #[test]
+    fn a_trailing_newline_is_trimmed_however_the_text_arrived() {
+        // Pango makes an empty final line out of it and counts that line in
+        // the layout height, so the surface is a line taller than the message:
+        // the compositor centres the phantom too and everything sits half a
+        // line high, with the caret finishing at x=0 on the empty line.
+        // stdin was already trimmed for exactly this reason; argv was not, so
+        // the same message rendered differently depending on how it was given.
+        let cli = Cli::parse_from(["wayhud", "one\ntwo\n"]);
+        assert_eq!(read_text(&cli).unwrap(), "one\ntwo");
+
+        let cli = Cli::parse_from(["wayhud", "one\n\n\n"]);
+        assert_eq!(read_text(&cli).unwrap(), "one", "all of them, not just one");
+
+        // A newline in the middle is the whole point of the feature and stays.
+        let cli = Cli::parse_from(["wayhud", "one\n\ntwo"]);
+        assert_eq!(read_text(&cli).unwrap(), "one\n\ntwo");
     }
 
     #[test]

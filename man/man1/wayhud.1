@@ -40,6 +40,11 @@ through
 which has no
 .BR $'...'
 quoting. Text arriving on standard input is used verbatim.
+.PP
+Trailing newlines are dropped whichever way the text arrives. Pango turns one
+into an empty final line and counts it in the height, so the surface comes out
+a line taller than the message: the compositor centres that phantom line along
+with the text, and everything sits half a line off.
 .SH OPTIONS
 .TP
 .BR \-o ", " \-\-output " \fISPEC\fR"
