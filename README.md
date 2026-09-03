@@ -183,7 +183,7 @@ vanish = { kind = "wash", ms = 300, dir = "up" }
 | `font`          | Pango description       | `"Monospace 72"`           | Family and size in points                             |
 | `color`         | CSS colour              | `"#b8bb26"`                | Glyph fill                                            |
 | `outline`       | CSS colour              | `"#1d2021"`                | Stroke colour; `"none"` or omit for none              |
-| `outline_width` | float, logical px       | font size / 14             | Stroke width; unset it scales with the font           |
+| `outline_width` | float, 0–128 logical px | font size / 14             | Stroke width; unset it scales with the font           |
 | `glow`          | table                   | —                          | Halo behind the glyphs; omit for none                 |
 | `halign`        | `left` `center` `right` | `center`                   | Horizontal placement on the output                    |
 | `valign`        | `top` `center` `bottom` | `center`                   | Vertical placement                                    |

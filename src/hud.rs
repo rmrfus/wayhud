@@ -605,6 +605,10 @@ fn draw(
 /// the character. The straight vertical edge that clipping leaves in the last
 /// letter's halo is covered by the caret's own halo, which is painted at
 /// exactly that seam — see `paint_caret_glow`.
+///
+/// Vertically it is the opposite: the caret's line gets a radius of extra
+/// room below it, because a halo reaches that far past the line box and
+/// clipping at the box severed it flat.
 #[expect(
     clippy::too_many_arguments,
     reason = "same argument list as paint_text, plus the mask and its colour"

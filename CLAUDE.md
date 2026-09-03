@@ -78,4 +78,22 @@ carry a broken hunk through.
 - **`block_life` must stay deterministic.** Re-rolling the dissolve pattern per
   frame turns a decay into static.
 - **Redraw only when the frame actually changes.** A 60 fps cairo text-path
-  repaint of a static string across three HiDPI outputs is pure heat.
+  repaint of a static string across three HiDPI outputs is pure heat. The glow
+  mask obeys the same rule from the other side: it is blurred once per output,
+  next to the pango layout, because it depends on nothing that changes and the
+  vanish repaints every frame.
+- **The blur passes run in `f32` and quantise to a byte once at the end.**
+  Rounding between passes destroys a thin stroke: traced on one lit pixel it
+  went 255 → 36 → 5 → 1 while the image total fell from 255 to 41, because
+  255/9 is 28, 28/9 is 3 and 3/9 is 0. A glyph stem against a 12px radius is
+  exactly that sparse, so the halo rendered as nothing at all.
+- **The clip rectangles start at the surface edge, so their third argument is
+  a WIDTH that has to carry `pad`.** Writing the right edge there instead left
+  the revealed text ending `pad` short of the caret — 60px at 72pt with no glow
+  at all, growing with the glow radius, which is what finally made it visible
+  after months. Same trap on the height: the caret's line needs a radius of
+  room below it or the halo is cut flat along the line box.
+- **Anything that widens the padding is bounded by `MAX_EDGE_PX`.** The
+  outline stroke and the glow radius both feed `pad`, and `pad` is subtracted
+  from the monitor width to get the wrapping budget; unbounded, either starves
+  the text until every line breaks after one word.
