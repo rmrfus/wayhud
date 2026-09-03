@@ -552,11 +552,18 @@ fn draw(
             cr, mask, layout, hud, colour, glow_alpha, visible, total, alpha, whiten, pad,
         );
     }
-    paint_text(cr, layout, hud, visible, total, alpha, whiten, pad);
     // Blink state is decided once per tick; recomputing it here would be a
     // second source of truth for the same thing.
-    if caret_on {
-        let caret = caret_rect(layout, &hud.text, visible);
+    let caret = caret_on.then(|| caret_rect(layout, &hud.text, visible));
+    // Every halo goes down before any ink, so the caret's light sits under the
+    // glyphs rather than over the letter it follows.
+    if let (Some(caret), Some((_, colour, glow_alpha)), Some((_, g))) =
+        (caret.as_ref(), glow.as_ref(), hud.glow.as_ref())
+    {
+        paint_caret_glow(cr, caret, *colour, g.radius, *glow_alpha, alpha, whiten);
+    }
+    paint_text(cr, layout, hud, visible, total, alpha, whiten, pad);
+    if let Some(caret) = caret {
         set_color(cr, hud.fill, alpha, whiten);
         cr.rectangle(caret.x, caret.y, caret.w, caret.h);
         let _ = cr.fill();
@@ -591,13 +598,13 @@ fn draw(
 /// the mask was rendered with the text at `+pad` inside it, and the caller has
 /// already translated the context to the text origin.
 ///
-/// The typewriter clip gets the RADIUS as its slack, not the stroke width that
-/// `paint_text` uses. That is a deliberate trade: a halo is wider than its
-/// glyph, so clipping it at the caret would slice the last typed letter's glow
-/// off with a straight vertical edge — the one artefact a glow cannot survive.
-/// The cost is that the next letter's halo bleeds a little ahead of the caret;
-/// light does that, and a blur at this radius is a smudge rather than a
-/// readable shape.
+/// The typewriter clip stops at the caret with NO slack, unlike `paint_text`,
+/// which allows the stroke width. Letting the halo run a radius past the caret
+/// showed the not-yet-typed letter's glow as a smudge the caret then sat
+/// inside, so the caret read as belonging after the light rather than after
+/// the character. The straight vertical edge that clipping leaves in the last
+/// letter's halo is covered by the caret's own halo, which is painted at
+/// exactly that seam — see `paint_caret_glow`.
 #[expect(
     clippy::too_many_arguments,
     reason = "same argument list as paint_text, plus the mask and its colour"
@@ -623,9 +630,8 @@ fn paint_glow(
     if visible < total {
         let caret = caret_rect(layout, &hud.text, visible);
         let (w, _) = layout.pixel_size();
-        let slack = hud.glow.as_ref().map_or(1.0, |(_, g)| g.radius.max(1.0));
         cr.rectangle(-pad, -pad, f64::from(w) + pad * 2.0, caret.y + pad);
-        cr.rectangle(-pad, caret.y, caret.x + slack, caret.h);
+        cr.rectangle(-pad, caret.y, caret.x, caret.h);
         cr.clip();
     }
     set_color(cr, colour, alpha * glow_alpha, whiten);
@@ -633,6 +639,67 @@ fn paint_glow(
     // Positions are in mask pixels from here on, hence pad through the scale.
     let _ = cr.mask_surface(mask, -pad * scale, -pad * scale);
     let _ = cr.restore();
+}
+
+/// The caret's own halo.
+///
+/// The cached text mask cannot carry it: the caret moves every keystroke,
+/// while the mask is built once from the full string. So this blurs a
+/// rectangle instead — cheap, because a caret is a few thousand pixels against
+/// the message's megapixel, and it reuses the same `blur` the text mask does
+/// so the two fall off identically.
+///
+/// Without it the caret is the one thing on screen not emitting light, which
+/// reads as a flat object pasted into a glowing line rather than as the write
+/// head of the same terminal.
+fn paint_caret_glow(
+    cr: &gtk::cairo::Context,
+    caret: &Caret,
+    colour: gdk::RGBA,
+    radius: f64,
+    glow_alpha: f64,
+    alpha: f64,
+    whiten: f64,
+) {
+    let r = radius.max(0.0);
+    let w = (caret.w + r * 2.0).ceil() as i32;
+    let h = (caret.h + r * 2.0).ceil() as i32;
+    if w <= 0 || h <= 0 {
+        return;
+    }
+    let Some(mut surface) = gtk::cairo::ImageSurface::create(gtk::cairo::Format::A8, w, h).ok()
+    else {
+        return;
+    };
+    {
+        let Ok(mcr) = gtk::cairo::Context::new(&surface) else {
+            return;
+        };
+        mcr.set_source_rgba(1.0, 1.0, 1.0, 1.0);
+        mcr.rectangle(r, r, caret.w, caret.h);
+        let _ = mcr.fill();
+    }
+    surface.flush();
+    let stride = surface.stride() as usize;
+    let (uw, uh) = (w as usize, h as usize);
+    let mut buf = vec![0u8; uw * uh];
+    {
+        let Ok(data) = surface.data() else { return };
+        for y in 0..uh {
+            buf[y * uw..y * uw + uw].copy_from_slice(&data[y * stride..y * stride + uw]);
+        }
+    }
+    blur(&mut buf, uw, uh, r.round() as usize);
+    {
+        let Ok(mut data) = surface.data() else { return };
+        for y in 0..uh {
+            data[y * stride..y * stride + uw].copy_from_slice(&buf[y * uw..y * uw + uw]);
+        }
+    }
+    surface.mark_dirty();
+
+    set_color(cr, colour, alpha * glow_alpha, whiten);
+    let _ = cr.mask_surface(&surface, caret.x - r, caret.y - r);
 }
 
 /// Stroke + fill the glyphs, clipped to whatever has been typed so far.
@@ -1231,6 +1298,118 @@ mod tests {
             halo > glyphs,
             "the halo covers {halo} pixels against the glyph's {glyphs}, so it \
              is not reaching past the ink"
+        );
+    }
+
+    #[test]
+    fn the_caret_glows_past_its_own_rectangle() {
+        // The caret used to be the only thing on screen not emitting light,
+        // which read as a flat object pasted into a glowing line rather than
+        // the write head of the same terminal.
+        let caret = Caret {
+            x: 20.0,
+            y: 20.0,
+            w: 18.0,
+            h: 40.0,
+        };
+        let white = gdk::RGBA::parse("#ffffff").expect("colour");
+        let solid = lit_pixels(
+            |cr| {
+                cr.rectangle(caret.x, caret.y, caret.w, caret.h);
+                let _ = cr.fill();
+            },
+            120,
+            120,
+        );
+        let halo = lit_pixels(
+            |cr| paint_caret_glow(cr, &caret, white, 10.0, 1.0, 1.0, 0.0),
+            120,
+            120,
+        );
+        assert!(solid > 0, "the caret rectangle itself did not render");
+        assert!(
+            halo > solid,
+            "the caret halo covers {halo} pixels against the caret's {solid}"
+        );
+    }
+
+    #[test]
+    fn a_zero_radius_caret_halo_paints_nothing_past_the_caret() {
+        // radius 0 is the "no glow" setting; the caret must not gain a halo
+        // the rest of the text does not have.
+        let caret = Caret {
+            x: 20.0,
+            y: 20.0,
+            w: 18.0,
+            h: 40.0,
+        };
+        let white = gdk::RGBA::parse("#ffffff").expect("colour");
+        let solid = lit_pixels(
+            |cr| {
+                cr.rectangle(caret.x, caret.y, caret.w, caret.h);
+                let _ = cr.fill();
+            },
+            120,
+            120,
+        );
+        let halo = lit_pixels(
+            |cr| paint_caret_glow(cr, &caret, white, 0.0, 1.0, 1.0, 0.0),
+            120,
+            120,
+        );
+        assert_eq!(halo, solid, "a zero radius must be the bare rectangle");
+    }
+
+    #[test]
+    fn the_text_halo_stops_at_the_caret() {
+        // Letting it run a radius past the caret showed the not-yet-typed
+        // letter's glow as a smudge the caret then sat inside, so the caret
+        // read as belonging after the light rather than after the character.
+        let radius = 12.0;
+        let style = Style {
+            font: "Sans 48".into(),
+            reveal: TW,
+            glow: Some(crate::config::Glow {
+                color: "#ffffff".into(),
+                radius,
+                alpha: 1.0,
+            }),
+            ..Style::default()
+        };
+        let text = "ooooo";
+        let hud = Hud::new(style, text.into(), 1).expect("hud");
+        let layout = bare_layout(text, &hud.style.font);
+        let pad = hud.pad();
+        let (tw, th) = layout.pixel_size();
+        let (w, h) = (
+            (f64::from(tw) + pad * 2.0) as i32,
+            (f64::from(th) + pad * 2.0) as i32,
+        );
+        let mask = glow_mask(&layout, radius, pad, 1.0).expect("mask");
+        let (colour, _) = hud.glow.as_ref().expect("glow");
+        let visible = 2;
+        let caret = caret_rect(&layout, text, visible);
+
+        let mut surface =
+            gtk::cairo::ImageSurface::create(gtk::cairo::Format::A8, w, h).expect("target");
+        {
+            let cr = gtk::cairo::Context::new(&surface).expect("context");
+            cr.translate(pad, pad);
+            paint_glow(
+                &cr, &mask, &layout, &hud, *colour, 1.0, visible, 5, 1.0, 0.0, pad,
+            );
+        }
+        surface.flush();
+        let stride = surface.stride() as usize;
+        let data = surface.data().expect("pixels");
+        // Sample the caret's own line, a couple of pixels right of the caret.
+        let y = (pad + caret.y + caret.h / 2.0) as usize;
+        let x = (pad + caret.x + 2.0) as usize;
+        assert_eq!(
+            data[y * stride + x],
+            0,
+            "the text halo bled {} past the caret at x={x}",
+            data[y * stride + x]
         );
     }
 
