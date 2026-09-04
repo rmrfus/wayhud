@@ -75,7 +75,7 @@ pub enum LineAlign {
 
 /// How the text appears.
 #[derive(Deserialize, Clone, Debug)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Reveal {
     /// All at once.
     Instant,
@@ -105,7 +105,7 @@ pub enum Dir {
 
 /// How the text goes away.
 #[derive(Deserialize, Clone, Copy, Debug, PartialEq)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Vanish {
     /// Disappear on the frame the hold expires.
     Instant,
@@ -583,6 +583,21 @@ mod tests {
                 dir: Dir::Up
             }
         );
+    }
+
+    #[test]
+    fn a_misspelled_key_inside_a_reveal_or_vanish_table_is_rejected() {
+        // deny_unknown_fields on Style stops at the enum: the attribute the
+        // test above relies on has to be on Reveal and Vanish themselves.
+        // Without it a typo loaded in silence and the effect ran on defaults,
+        // so the knob that appeared to do nothing was not the one at fault.
+        for table in [
+            "reveal = { kind = \"typewriter\", cps = 40, bogus = 1 }",
+            "vanish = { kind = \"fade\", ms = 100, bogus = 1 }",
+        ] {
+            let c: Config = toml::from_str(&format!("[style.a]\n{table}\n")).unwrap();
+            assert!(c.style("a").is_err(), "{table} should be rejected");
+        }
     }
 
     /// Write a config to a scratch file and load it the way the binary does.
