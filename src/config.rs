@@ -299,6 +299,12 @@ impl Style {
             // NaN passes every comparison below and would make the whole
             // timeline NaN, closing the window on the first frame.
             anyhow::ensure!(cps.is_finite(), "reveal.cps must be a finite number");
+            // Zero is not an instant reveal in disguise: the timeline would
+            // still type instantly, but the Typewriter variant is kept, so the
+            // HUD reserves caret room and blinks through the hold — while
+            // --typewriter 0 builds a real Instant and does neither. For no
+            // typewriter the kind must say so.
+            anyhow::ensure!(cps > 0.0, "reveal.cps must be positive, got {cps}");
         }
         anyhow::ensure!(
             self.vanish.ms() <= MAX_LIFETIME_MS,
@@ -720,6 +726,21 @@ mod tests {
         let c: Config =
             toml::from_str("[style.a]\nreveal = { kind = \"typewriter\", cps = nan }\n").unwrap();
         assert!(c.style("a").is_err());
+    }
+
+    #[test]
+    fn a_non_positive_cps_is_rejected_not_silently_instant() {
+        // Negative or zero must not quietly become an instant reveal: zero
+        // still types instantly but keeps the Typewriter variant, so the HUD
+        // reserves caret room and blinks through the hold. For no typewriter
+        // the kind must say "instant".
+        for cps in ["-5", "0"] {
+            let c: Config = toml::from_str(&format!(
+                "[style.a]\nreveal = {{ kind = \"typewriter\", cps = {cps} }}\n"
+            ))
+            .unwrap();
+            assert!(c.style("a").is_err(), "cps = {cps} should be rejected");
+        }
     }
 
     #[test]

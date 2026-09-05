@@ -80,23 +80,23 @@ make && make install DESTDIR="$pkgdir" PREFIX=/usr
 See `man 1 wayhud` for the full reference, and `man 5 wayhud` for the config
 file format.
 
-| Flag            | Default   | Meaning                                                |
-| --------------- | --------- | ------------------------------------------------------ |
-| `TEXT`          | —         | Message. Omit or pass `-` to read stdin.               |
-| `-o, --output`  | `current` | `current`, `all`, or `DP-3,eDP-1`                      |
-| `-t, --timeout` | `5`       | Hold in seconds, counted from the END of the reveal    |
-| `-s, --style`   | `default` | Preset from the config file                            |
-| `--font`        | —         | Pango description, e.g. `"Monospace 72"`               |
-| `--color`       | —         | Any CSS colour GTK parses                              |
-| `--outline`     | —         | Outline colour, optionally `:WIDTH`, or `none`         |
-| `--glow`        | —         | Halo colour, optionally `:RADIUS`, or `none`           |
-| `--position`    | —         | `center`, `top`, `bottom-right`, …                     |
-| `--typewriter`  | —         | Characters/second; `0` reveals instantly               |
-| `--jitter`      | —         | Stagger keystroke gaps by ±this fraction (0–1)         |
-| `--vanish`      | —         | Exit effect, optionally `:MS` — see below              |
-| `--no-sound`    | —         | Stay quiet regardless of the style                     |
-| `--raw`         | —         | Take the argument literally (no `\n` / `\t` expansion) |
-| `--config`      | XDG path  | Config file location                                   |
+| Flag            | Default   | Meaning                                                        |
+| --------------- | --------- | -------------------------------------------------------------- |
+| `TEXT`          | —         | Message. Omit or pass `-` to read stdin.                       |
+| `-o, --output`  | `current` | `current`, `all`, or `DP-3,eDP-1`                              |
+| `-t, --timeout` | `5`       | Hold in seconds, counted from the END of the reveal            |
+| `-s, --style`   | `default` | Preset from the config file                                    |
+| `--font`        | —         | Pango description, e.g. `"Monospace 72"`                       |
+| `--color`       | —         | Any CSS colour GTK parses                                      |
+| `--outline`     | —         | Outline colour, optionally `:WIDTH` (not on `none`), or `none` |
+| `--glow`        | —         | Halo colour, optionally `:RADIUS` (not on `none`), or `none`   |
+| `--position`    | —         | `center`, `top`, `bottom-right`, …                             |
+| `--typewriter`  | —         | Characters/second; `0` reveals instantly                       |
+| `--jitter`      | —         | Stagger keystroke gaps by ±this fraction (0–1)                 |
+| `--vanish`      | —         | Exit effect, optionally `:MS` (not on `instant`) — see below   |
+| `--no-sound`    | —         | Stay quiet regardless of the style                             |
+| `--raw`         | —         | Take the argument literally (no `\n` / `\t` expansion)         |
+| `--config`      | XDG path  | Config file location                                           |
 
 The hold timeout is measured from the **end** of the reveal, not from start-up,
 so a slow typewriter doesn't eat into the reading time.
@@ -129,8 +129,9 @@ all is an error.
 ## Vanish effects
 
 `--vanish <kind>[:<ms>]`, or `vanish = { kind = "...", ms = ... }` in a preset.
-Without `:MS` the flag keeps whatever duration the preset already had, so you
-can cycle through effects without restating the timing.
+`instant` takes no `:MS`. Without `:MS` the flag keeps whatever duration the
+preset already had, so you can cycle through effects without restating the
+timing.
 
 | `--vanish`  | In a preset                       | What it looks like                                                  |
 | ----------- | --------------------------------- | ------------------------------------------------------------------- |
@@ -200,7 +201,8 @@ vanish = { kind = "wash", ms = 300, dir = "up" }
 | `sound`         | table                   | on, 2100 Hz, gain 0.22     | The typewriter blip                                   |
 
 `reveal` is `{ kind = "instant" }` or
-`{ kind = "typewriter", cps = F, cursor = BOOL, jitter = F }`. `jitter` (0–1,
+`{ kind = "typewriter", cps = F, cursor = BOOL, jitter = F }`, with `cps`
+positive — for no typewriter the kind must say `instant`. `jitter` (0–1,
 default 0) staggers each keystroke gap by up to that fraction either way, so
 the typing stops sounding like a metronome; the blips use the same moments as
 the glyphs, so they cannot drift apart.

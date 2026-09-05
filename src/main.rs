@@ -347,23 +347,38 @@ fn apply_overrides(style: &mut Style, cli: &Cli) -> Result<()> {
 
 /// `wash-up`, `fade:250`, `collapse`, …
 fn parse_vanish(spec: &str, fallback_ms: u64) -> Result<Vanish> {
-    let (kind, ms) = match spec.split_once(':') {
+    let (kind, stated_ms) = match spec.split_once(':') {
         Some((k, m)) => (
             k,
-            m.parse::<u64>()
-                .with_context(|| format!("bad duration {m:?} in --vanish"))?,
+            Some(
+                m.parse::<u64>()
+                    .with_context(|| format!("bad duration {m:?} in --vanish"))?,
+            ),
         ),
+        None => (spec, None),
+    };
+    // Instant has no timing at all, so this check runs before the cap below:
+    // a stated duration here is a typo, and bounding it first would blame the
+    // size of a number that should not exist — `instant:99999999` must say it
+    // takes no duration, not that the duration is too long.
+    if matches!(kind, "instant" | "none") {
+        if stated_ms.is_some() {
+            anyhow::bail!("--vanish {kind} takes no duration, got {spec:?}");
+        }
+        return Ok(Vanish::Instant);
+    }
+    let ms = match stated_ms {
+        Some(m) => m,
         // An instant preset has no duration to keep, so fall back to the
         // compiled default rather than to a 1 ms flicker.
-        None if fallback_ms == 0 => (spec, config::DEFAULT_VANISH_MS),
-        None => (spec, fallback_ms),
+        None if fallback_ms == 0 => config::DEFAULT_VANISH_MS,
+        None => fallback_ms,
     };
     anyhow::ensure!(
         ms <= MAX_LIFETIME_MS,
         "--vanish duration must be at most {MAX_LIFETIME_MS} ms"
     );
     Ok(match kind {
-        "instant" | "none" => Vanish::Instant,
         "fade" => Vanish::Fade { ms },
         "collapse" | "crt" => Vanish::Collapse { ms },
         "wash" | "wash-down" => Vanish::Wash { ms, dir: Dir::Down },
@@ -389,17 +404,22 @@ fn parse_edge(
     flag: &str,
     current: Option<f64>,
 ) -> Result<(Option<String>, Option<f64>)> {
-    let (colour, size) = match spec.split_once(':') {
+    let (colour, size, stated) = match spec.split_once(':') {
         Some((c, n)) => (
             c,
             Some(
                 n.parse::<f64>()
                     .with_context(|| format!("bad size {n:?} in {flag}"))?,
             ),
+            true,
         ),
-        None => (spec, current),
+        None => (spec, current, false),
     };
     if colour == "none" {
+        // A size on "none" is a typo, not a setting: there is no stroke to
+        // size, so accepting it would bless `--outline none:5`. Bare "none"
+        // still carries the configured width through, untouched.
+        anyhow::ensure!(!stated, "{flag} none takes no size, got {spec:?}");
         return Ok((None, size));
     }
     // An empty colour would fall through to whatever was configured rather
@@ -527,6 +547,26 @@ mod tests {
     }
 
     #[test]
+    fn instant_vanish_with_a_stated_duration_is_rejected() {
+        // The duration would be dropped in silence; instant has no timing.
+        assert!(parse_vanish("instant:500", 400).is_err());
+        assert!(parse_vanish("none:100", 0).is_err());
+        // ...while a stated duration on a timed effect still works.
+        assert_eq!(
+            parse_vanish("fade:250", 400).unwrap(),
+            Vanish::Fade { ms: 250 }
+        );
+        // A huge number on instant must blame the presence of a duration, not
+        // its size: the cap runs after this check, so the user learns the
+        // truth on the first try instead of shrinking the number twice.
+        let err = parse_vanish("instant:99999999", 400).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("takes no duration"),
+            "wrong check fired: {err:#}"
+        );
+    }
+
+    #[test]
     fn instant_vanish_survives_the_fallback_clamp() {
         // fallback_ms.max(1) must not turn an explicit "instant" into a 1 ms
         // animation with a duration nobody asked for.
@@ -620,11 +660,12 @@ mod tests {
     }
 
     #[test]
-    fn outline_none_with_a_size_is_still_none() {
-        // "none:5" is nonsense but reachable; it must switch the stroke off
-        // rather than resolve to a colour literally spelled "none".
-        let (colour, _) = parse_edge("none:5", "--outline", None).unwrap();
-        assert!(colour.is_none());
+    fn outline_none_with_a_size_is_rejected_not_switched_off() {
+        // "none:5" used to switch the stroke off and drop the size in silence;
+        // a size on an effect that has none is a typo, like --vanish
+        // instant:500. Bare "none" still works — see outline_none_disables_*.
+        assert!(parse_edge("none:5", "--outline", None).is_err());
+        assert!(parse_edge("none:5", "--glow", None).is_err());
     }
 
     #[test]

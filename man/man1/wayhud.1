@@ -111,7 +111,9 @@ Fill colour of the glyphs. Any colour GTK's CSS parser accepts:
 .BR \-\-outline " \fICOLOUR\fR[:\fIWIDTH\fR]"
 Outline colour, or
 .B none
-to draw the glyphs flat. The outline is a real cairo stroke around the glyph
+to draw the glyphs flat. A size on
+.B none
+is rejected: there is no stroke to size. The outline is a real cairo stroke around the glyph
 path, not a shadow, so it stays clean at display sizes.
 .IP
 .I WIDTH
@@ -125,7 +127,9 @@ like a fine contour at 72pt reads as fake bold at 24pt.
 .BR \-\-glow " \fICOLOUR\fR[:\fIRADIUS\fR]"
 Paint a soft halo behind the glyphs, or
 .B none
-for no halo. The radius is in logical pixels, 0 to 128; without it the flag
+for no halo. A radius on
+.B none
+is rejected: there is no halo to size. The radius is in logical pixels, 0 to 128; without it the flag
 keeps whatever the preset had, so a colour can be tried without restating the
 geometry.
 .IP
@@ -167,7 +171,7 @@ Exit animation, one of:
 .RS
 .TP
 .BR instant " (alias: " none )
-Gone on the frame the hold expires.
+Gone on the frame the hold expires. Takes no duration suffix.
 .TP
 .B fade
 Alpha to zero.
