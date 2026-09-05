@@ -24,7 +24,10 @@ keyboard events \- whatever is underneath stays usable.
 .I TEXT
 is taken from the command line; if it is omitted or given as
 .BR - ,
-the message is read from standard input instead. Piped input is read to end
+the message is read from standard input instead. Either way the message is
+limited to 100000 characters: everything downstream scales with the text, so
+an unbounded pipe would exhaust memory before the first frame. Piped input
+is read to end
 of file before anything is drawn, so a stream that never ends \-
 .B journalctl \-f
 and the like \- will never display. In a command\-line

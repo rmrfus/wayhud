@@ -30,6 +30,13 @@ use serde::Deserialize;
 /// exactly as well as a huge `--timeout` does.
 pub const MAX_LIFETIME_MS: u64 = 3_600_000;
 
+/// Longest message we will render, in characters. Everything downstream
+/// scales with the text — the step table, the blip onsets, the shaped pango
+/// layout — so an unbounded pipe is an OOM before the first frame, while the
+/// lifetime cap above only fires after those allocations. A HUD is not a
+/// pager: anything past this is a mistake, not a message.
+pub const MAX_TEXT_CHARS: usize = 100_000;
+
 /// Ceiling on anything that widens the padding — the outline stroke and the
 /// glow radius.
 ///

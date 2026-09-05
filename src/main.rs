@@ -23,7 +23,8 @@ use clap::Parser;
 use gtk::glib;
 
 use config::{
-    Config, Dir, Glow, HAlign, MAX_EDGE_PX, MAX_LIFETIME_MS, Reveal, Style, VAlign, Vanish,
+    Config, Dir, Glow, HAlign, MAX_EDGE_PX, MAX_LIFETIME_MS, MAX_TEXT_CHARS, Reveal, Style, VAlign,
+    Vanish,
 };
 use hud::Hud;
 use outputs::OutputSpec;
@@ -246,7 +247,15 @@ fn read_text(cli: &Cli) -> Result<String> {
     // Trimming only the piped side, which is what this did, made
     // `wayhud "a\n"` and `printf 'a\n' | wayhud` render differently for no
     // reason a user could see.
-    Ok(text.trim_end_matches('\n').to_string())
+    let text = text.trim_end_matches('\n');
+    // Bound the text itself, not just its lifetime: the check in run() fires
+    // after the step table and the layout are already allocated.
+    let count = text.chars().count();
+    anyhow::ensure!(
+        count <= MAX_TEXT_CHARS,
+        "message is {count} characters; the maximum is {MAX_TEXT_CHARS}"
+    );
+    Ok(text.to_string())
 }
 
 /// Expand the escapes the shell won't. sway runs `exec` through `sh`, which
@@ -790,6 +799,23 @@ mod tests {
     fn raw_mode_keeps_the_text_verbatim() {
         let cli = Cli::parse_from(["wayhud", "a\\nb", "--raw"]);
         assert_eq!(read_text(&cli).unwrap(), "a\\nb");
+    }
+
+    #[test]
+    fn an_absurdly_long_message_is_rejected_at_the_edge() {
+        // Everything downstream scales with the text — steps, onsets, the
+        // shaped layout — so an unbounded pipe is an OOM before the first
+        // frame, and the lifetime cap only fires after those allocations.
+        let long = "x".repeat(config::MAX_TEXT_CHARS + 1);
+        let cli = Cli::parse_from(["wayhud", &long]);
+        let err = read_text(&cli).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("maximum"),
+            "wrong error: {err:#}"
+        );
+        // The boundary itself still loads.
+        let cli = Cli::parse_from(["wayhud", &"x".repeat(config::MAX_TEXT_CHARS)]);
+        assert!(read_text(&cli).is_ok());
     }
 
     #[test]

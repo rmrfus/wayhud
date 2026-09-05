@@ -82,7 +82,7 @@ file format.
 
 | Flag            | Default   | Meaning                                                        |
 | --------------- | --------- | -------------------------------------------------------------- |
-| `TEXT`          | —         | Message. Omit or pass `-` to read stdin.                       |
+| `TEXT`          | —         | Message, at most 100000 chars. Omit or pass `-` to read stdin. |
 | `-o, --output`  | `current` | `current`, `all`, or `DP-3,eDP-1`                              |
 | `-t, --timeout` | `5`       | Hold in seconds, counted from the END of the reveal            |
 | `-s, --style`   | `default` | Preset from the config file                                    |
