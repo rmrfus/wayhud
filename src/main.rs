@@ -215,6 +215,31 @@ fn load_css() {
     }
 }
 
+/// Read a message from `r`, stopping before an endless stream fills memory.
+///
+/// `Read::take` bounds bytes while the cap counts characters, so the budget is
+/// the cap's worst case in UTF-8 plus one: MAX_TEXT_CHARS characters occupy at
+/// most four times as many bytes, so one byte past that proves the message is
+/// over the limit whatever it encodes. Stopping there is the whole point — a
+/// character count can only speak once the stream is already resident, which
+/// is too late for a pipe that never ends.
+fn read_capped(r: impl Read) -> Result<String> {
+    const BUDGET: u64 = MAX_TEXT_CHARS as u64 * 4 + 1;
+    let mut bytes = Vec::new();
+    r.take(BUDGET)
+        .read_to_end(&mut bytes)
+        .context("reading stdin")?;
+    // Filling the budget means the input did not end inside it. This has to
+    // answer before the conversion below, not after: a tail cut at an
+    // arbitrary byte need not be valid UTF-8, and "not valid UTF-8" is the
+    // wrong thing to tell someone whose only mistake was piping too much.
+    anyhow::ensure!(
+        (bytes.len() as u64) < BUDGET,
+        "message is longer than the maximum of {MAX_TEXT_CHARS} characters"
+    );
+    String::from_utf8(bytes).context("input is not valid UTF-8")
+}
+
 /// Text comes from argv, or from stdin when argv is empty or "-".
 fn read_text(cli: &Cli) -> Result<String> {
     // Only argv gets unescaped. Text piped in already carries real newlines,
@@ -231,11 +256,7 @@ fn read_text(cli: &Cli) -> Result<String> {
         if std::io::stdin().is_terminal() {
             anyhow::bail!("no text given (pass it as an argument or pipe it in)");
         }
-        let mut buf = String::new();
-        std::io::stdin()
-            .read_to_string(&mut buf)
-            .context("reading stdin")?;
-        buf
+        read_capped(std::io::stdin())?
     };
     // Whichever way the text arrived. Pango turns a trailing newline into an
     // empty final line and counts it in the layout height, so the surface ends
@@ -816,6 +837,46 @@ mod tests {
         // The boundary itself still loads.
         let cli = Cli::parse_from(["wayhud", &"x".repeat(config::MAX_TEXT_CHARS)]);
         assert!(read_text(&cli).is_ok());
+    }
+
+    #[test]
+    fn an_endless_stream_stops_at_the_budget_instead_of_being_read_whole() {
+        // argv is bounded by ARG_MAX; the pipe is the side that can grow
+        // without limit, so it is the side worth a test. The byte counter is
+        // the assertion that matters — a cap that only counts characters
+        // passes the error check below while still having read everything.
+        struct Counting {
+            asked: usize,
+            left: usize,
+        }
+        impl Read for Counting {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                let n = buf.len().min(self.left);
+                buf[..n].fill(b'x');
+                self.asked += n;
+                self.left -= n;
+                Ok(n)
+            }
+        }
+        let budget = MAX_TEXT_CHARS * 4 + 1;
+        // Finite, so a regression fails the assertion rather than hanging.
+        let mut src = Counting {
+            asked: 0,
+            left: budget * 4,
+        };
+        let err = read_capped(&mut src).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("maximum"),
+            "wrong error: {err:#}"
+        );
+        assert_eq!(
+            src.asked, budget,
+            "read {} bytes against a {budget}-byte budget: the stream is not bounded",
+            src.asked
+        );
+        // A message at the cap still arrives whole.
+        let at_cap = "x".repeat(MAX_TEXT_CHARS);
+        assert_eq!(read_capped(at_cap.as_bytes()).unwrap(), at_cap);
     }
 
     #[test]

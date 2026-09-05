@@ -26,11 +26,11 @@ is taken from the command line; if it is omitted or given as
 .BR - ,
 the message is read from standard input instead. Either way the message is
 limited to 100000 characters: everything downstream scales with the text, so
-an unbounded pipe would exhaust memory before the first frame. Piped input
-is read to end
-of file before anything is drawn, so a stream that never ends \-
+an unbounded pipe would exhaust memory before the first frame. Reading stops
+at that limit rather than at end of file, so a stream that never ends \-
 .B journalctl \-f
-and the like \- will never display. In a command\-line
+and the like \- is refused with an error instead of growing until the machine
+gives out. Nothing is drawn until the input is complete. In a command\-line
 argument the escapes
 .BR \en ,
 .B \et
