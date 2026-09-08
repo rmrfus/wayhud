@@ -169,6 +169,24 @@ with
 .B \-\-typewriter 0
 it is an error rather than a silently ignored flag.
 .TP
+.B \-\-scroll
+Terminal mode, off unless asked for. The typewriter fills a block in one of two
+ways and this picks the second: the write head stays on the LAST line, and
+reaching a newline lifts everything already written by one line. Left alone the
+reveal fills the block downwards from its top edge, as it always has.
+.IP
+Nothing else differs between the two. The surface is sized from the finished
+message and placed before the first character is drawn either way, so the mode
+moves the text inside the box and never the box itself \- it needs no
+particular anchor and holds under any
+.BR \-\-position .
+A message with no newlines draws identically in both modes; there is nothing
+above it to lift.
+.IP
+Requires a typewriter reveal, the same way
+.B \-\-jitter
+does.
+.TP
 .BR \-\-vanish " \fIKIND\fR[:\fIMS\fR]"
 Exit animation, one of:
 .RS
@@ -271,6 +289,9 @@ Piped in, no animation, no sound:
 .TP
 Self\-destructing note:
 .B wayhud \-s spy \-\-vanish untype:900 \(dqTHIS MESSAGE WILL SELF DESTRUCT\(dq
+.TP
+A boot log crawling up the bottom corner:
+.B wayhud \-\-scroll \-\-position bottom\-left \(dqCHECKING DISKS\enMOUNTING /\enOK\(dq
 .SH ENVIRONMENT
 .TP
 .B I3SOCK

@@ -204,6 +204,7 @@ mod tests {
             cps,
             cursor: true,
             jitter: 0.0,
+            scroll: false,
         }
     }
 
@@ -212,6 +213,7 @@ mod tests {
             cps,
             cursor: true,
             jitter,
+            scroll: false,
         }
     }
 

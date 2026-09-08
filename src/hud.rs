@@ -168,6 +168,14 @@ impl Hud {
         }
     }
 
+    /// Terminal mode: the line being written stays on the bottom line of the
+    /// block. False is the other fill — downwards from the top edge — which is
+    /// the default and the only path this file had before; see
+    /// `scroll_offset` for what the difference costs to draw.
+    fn scrolls(&self) -> bool {
+        matches!(self.style.reveal, Reveal::Typewriter { scroll: true, .. })
+    }
+
     /// `max_width` is the widest the text block may get, in logical pixels.
     /// Without it a long line silently runs off both edges of the output:
     /// the layer surface is sized from the text, and the compositor clips
@@ -428,6 +436,37 @@ fn box_pass(
     }
 }
 
+/// How far DOWN to shift the whole text block so the line being written sits
+/// on the last line of it — the terminal fill.
+///
+/// Only reached when the style asks for it. The other fill is this offset held
+/// at zero, so the two modes differ by one translate and share every other
+/// pixel of the draw path — clip, caret, halo and all.
+///
+/// The surface is already sized from the full message and the compositor has
+/// already placed it, so this offset is the only moving part: at one line
+/// revealed the block is pushed down by the room the unwritten lines take, and
+/// every newline consumed lifts it back by that line's worth. Earlier lines
+/// rise, the write head does not — and it holds under any `valign`, because
+/// the box the offset moves inside of never moves itself.
+///
+/// Taken from the caret's own line box rather than counted in line heights. A
+/// line is only as tall as what is on it, so one line carrying a taller glyph
+/// — a fallback font for a single character is enough — would put a counted
+/// offset out by the difference for the whole rest of the message.
+///
+/// A function of the visible count and nothing else, so an untype vanish gets
+/// the reveal run backwards for free: the block slides back down as lines are
+/// eaten, which is the same rule, not a second one.
+fn scroll_offset(layout: &pango::Layout, text: &str, visible: usize) -> f64 {
+    let (_, th) = layout.pixel_size();
+    let (_, cy, ch) = caret_pos(layout, text, visible);
+    // The last line's bottom IS the block's, so this is 0 there. Clamped
+    // because a rounding wobble the other way would lift the finished text
+    // off the bottom of a surface sized to hold it exactly.
+    (f64::from(th) - (cy + ch)).max(0.0)
+}
+
 /// How many characters are on screen in this phase.
 ///
 /// One place, because the glow mask and the draw path have to agree on it: a
@@ -670,8 +709,23 @@ fn draw(
         visible = hud.timeline.untype_visible(vanish_p);
     }
 
+    // Terminal mode rides on the translate and nothing else: the clip
+    // rectangles, the caret and the glow mask are all positioned relative to
+    // the text origin, so moving that moves them together. Computed from the
+    // same `visible` the ink and the mask use, for the same reason they share
+    // `visible_chars` — a halo half a line off its glyphs is the failure here.
+    //
+    // Zero for the default fill, which makes that path the arithmetic identity
+    // of what it was before terminal mode existed rather than a second
+    // branch through the drawing code.
+    let scroll = if hud.scrolls() {
+        scroll_offset(layout, &hud.text, visible)
+    } else {
+        0.0
+    };
+
     let _ = cr.save();
-    cr.translate(pad.x, pad.y);
+    cr.translate(pad.x, pad.y + scroll);
 
     // Effects that change geometry or colour, applied before painting.
     let mut alpha = 1.0_f64;
@@ -1030,11 +1084,13 @@ mod tests {
         cps: 20.0,
         cursor: true,
         jitter: 0.0,
+        scroll: false,
     };
     const NO_CURSOR: Reveal = Reveal::Typewriter {
         cps: 20.0,
         cursor: false,
         jitter: 0.0,
+        scroll: false,
     };
     const UNTYPE: Vanish = Vanish::Untype { ms: 300 };
     const FADE: Vanish = Vanish::Fade { ms: 300 };
@@ -1894,5 +1950,208 @@ mod tests {
         }
         // Neighbours must not decay together, or it looks like a wipe.
         assert_ne!(block_life(5, 5), block_life(6, 5));
+    }
+
+    /// The first and last row of the surface carrying ink, after actually
+    /// running `draw` — not after recomputing what it was going to do.
+    fn ink_rows(hud: &Hud, layout: &pango::Layout, phase: Phase) -> (usize, usize) {
+        let pad = hud.pad();
+        let (tw, th) = layout.pixel_size();
+        let w = (f64::from(tw) + pad.x * 2.0).ceil() as i32;
+        let h = (f64::from(th) + pad.y * 2.0).ceil() as i32;
+        let mut surface =
+            gtk::cairo::ImageSurface::create(gtk::cairo::Format::A8, w, h).expect("surface");
+        {
+            let cr = gtk::cairo::Context::new(&surface).expect("context");
+            draw(&cr, hud, layout, None, phase, false);
+        }
+        surface.flush();
+        let stride = surface.stride() as usize;
+        let data = surface.data().expect("pixels");
+        let rows: Vec<usize> = (0..h as usize)
+            .filter(|y| (0..w as usize).any(|x| data[y * stride + x] > 0))
+            .collect();
+        (
+            rows.first().copied().expect("nothing was drawn at all"),
+            rows.last().copied().expect("nothing was drawn at all"),
+        )
+    }
+
+    #[test]
+    fn both_fills_ship_and_start_from_opposite_ends_of_the_box() {
+        // Terminal mode is a second fill, not a replacement: with `scroll` off
+        // the typewriter still fills the block downwards from its top edge.
+        // Asserted on the ink `draw` puts on a surface rather than on the
+        // offset behind it, because "the old mode still works" is a claim
+        // about what lands on screen.
+        //
+        // One line into a three-line message, so the two have somewhere to
+        // disagree: the default is writing the TOP line while terminal mode is
+        // writing the BOTTOM one, and the ink cannot overlap.
+        let text = "aaa\nbbb\nccc";
+        let font = "Monospace 36";
+        let hud = |scroll| {
+            Hud::new(
+                Style {
+                    font: font.into(),
+                    glow: None,
+                    reveal: Reveal::Typewriter {
+                        cps: 20.0,
+                        cursor: true,
+                        jitter: 0.0,
+                        scroll,
+                    },
+                    ..Style::default()
+                },
+                text.into(),
+                1,
+            )
+            .expect("hud")
+        };
+        let layout = bare_layout(text, font);
+        let (_, th) = layout.pixel_size();
+        let phase = Phase::Reveal { chars: 3 };
+
+        let (classic_top, classic_bottom) = ink_rows(&hud(false), &layout, phase);
+        let (terminal_top, terminal_bottom) = ink_rows(&hud(true), &layout, phase);
+
+        assert!(
+            classic_bottom < terminal_top,
+            "the two fills overlap: default ends at {classic_bottom}, \
+             terminal starts at {terminal_top}"
+        );
+        // And each is at the end it claims, measured against the block itself
+        // rather than against the other mode.
+        let third = f64::from(th) / 3.0;
+        assert!(
+            f64::from(classic_top as i32) < third,
+            "the default fill must start at the top of the box, not row {classic_top}"
+        );
+        assert!(
+            f64::from(terminal_bottom as i32) > third * 2.0,
+            "terminal mode must write at the bottom of the box, not row {terminal_bottom}"
+        );
+    }
+
+    #[test]
+    fn a_finished_message_draws_the_same_either_way() {
+        // The offset is zero once the last line is reached, so the two modes
+        // have to converge: a held message must not sit a line off depending
+        // on how it got there.
+        let text = "aaa\nbbb\nccc";
+        let font = "Monospace 36";
+        let hud = |scroll| {
+            Hud::new(
+                Style {
+                    font: font.into(),
+                    glow: None,
+                    reveal: Reveal::Typewriter {
+                        cps: 20.0,
+                        cursor: true,
+                        jitter: 0.0,
+                        scroll,
+                    },
+                    ..Style::default()
+                },
+                text.into(),
+                1,
+            )
+            .expect("hud")
+        };
+        let layout = bare_layout(text, font);
+        assert_eq!(
+            ink_rows(&hud(false), &layout, Phase::Hold),
+            ink_rows(&hud(true), &layout, Phase::Hold),
+            "the finished message moved between the two fills"
+        );
+    }
+
+    #[test]
+    fn only_a_scrolling_preset_moves_the_block() {
+        let hud = |reveal| {
+            Hud::new(
+                Style {
+                    reveal,
+                    ..Style::default()
+                },
+                "a\nb".into(),
+                1,
+            )
+            .expect("hud")
+            .scrolls()
+        };
+        assert!(!hud(TW), "a plain typewriter must fill the box downwards");
+        assert!(!hud(Reveal::Instant));
+        assert!(hud(Reveal::Typewriter {
+            cps: 20.0,
+            cursor: true,
+            jitter: 0.0,
+            scroll: true,
+        }));
+    }
+
+    #[test]
+    fn the_terminal_reveal_pins_the_write_head_to_the_bottom_line() {
+        // The whole contract of the mode, and the reason it needs no help from
+        // the anchors: wherever the compositor put the surface, the bottom of
+        // what has been written lands on the bottom of the block sized for the
+        // finished message. Checked per family because line boxes are a font
+        // property — the offset is measured from them, not counted in nominal
+        // line heights.
+        let text = "one\ntwo\nthree\nfour";
+        let total = text.chars().count();
+        for family in probe_families() {
+            let layout = bare_layout(text, &format!("{family} 36"));
+            let (_, th) = layout.pixel_size();
+            for visible in 0..=total {
+                let dy = scroll_offset(&layout, text, visible);
+                let (_, cy, ch) = caret_pos(&layout, text, visible);
+                assert!(
+                    (dy + cy + ch - f64::from(th)).abs() < 1e-6,
+                    "{family}: {visible} chars in, the written text ends at \
+                     {} rather than the block bottom {th}",
+                    dy + cy + ch
+                );
+            }
+            assert_eq!(
+                scroll_offset(&layout, text, total),
+                0.0,
+                "{family}: the finished message must sit where it always did"
+            );
+            assert!(
+                scroll_offset(&layout, text, 0) > 0.0,
+                "{family}: the first line must start pushed down"
+            );
+        }
+    }
+
+    #[test]
+    fn the_terminal_offset_only_ever_falls() {
+        // Lines rise, they never come back down mid-reveal — and a newline is
+        // the only thing that moves them: the offset holds steady while a line
+        // is being filled in and drops by that line when the break is reached.
+        let text = "aa\nbb\ncc";
+        let layout = bare_layout(text, "Monospace 36");
+        let steps: Vec<f64> = (0..=text.chars().count())
+            .map(|v| scroll_offset(&layout, text, v))
+            .collect();
+        assert!(
+            steps.windows(2).all(|w| w[1] <= w[0]),
+            "offset went back up: {steps:?}"
+        );
+        // Three lines, so exactly two drops.
+        let drops = steps.windows(2).filter(|w| w[1] < w[0]).count();
+        assert_eq!(drops, 2, "one drop per newline consumed: {steps:?}");
+    }
+
+    #[test]
+    fn a_single_line_message_never_scrolls() {
+        // Nothing above to lift, so terminal mode must be a no-op rather than
+        // a message that creeps.
+        let text = "no newlines here";
+        let layout = bare_layout(text, "Monospace 36");
+        for visible in 0..=text.chars().count() {
+            assert_eq!(scroll_offset(&layout, text, visible), 0.0, "at {visible}");
+        }
     }
 }

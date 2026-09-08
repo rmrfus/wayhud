@@ -99,6 +99,18 @@ pub enum Reveal {
         /// to 1.0, past which a gap would want to be negative.
         #[serde(default)]
         jitter: f64,
+        /// Which of the typewriter's two fills to use. False is the one this
+        /// has always had: the block is sized for the finished message up
+        /// front and filled downwards from its top edge. True is terminal
+        /// mode — the line being written stays on the LAST line of the block,
+        /// and a newline lifts everything above it.
+        ///
+        /// A field rather than a `Reveal` variant of its own because nothing
+        /// else about the reveal changes: same cps, same jitter, same caret,
+        /// same timeline. A variant would have duplicated all four and put a
+        /// second arm on every match that reads them.
+        #[serde(default)]
+        scroll: bool,
     },
 }
 
@@ -271,6 +283,7 @@ impl Default for Style {
                 cps: d_cps(),
                 cursor: true,
                 jitter: 0.0,
+                scroll: false,
             },
             vanish: Vanish::Collapse { ms: d_vanish_ms() },
             sound: Sound::default(),
@@ -702,6 +715,26 @@ mod tests {
     }
 
     #[test]
+    fn scroll_defaults_to_off_and_survives_a_preset_merge() {
+        let c: Config = toml::from_str("[style.a]\nreveal = { kind = \"typewriter\" }\n").unwrap();
+        assert!(matches!(
+            c.style("a").unwrap().reveal,
+            Reveal::Typewriter { scroll: false, .. }
+        ));
+        // The whole reason the merge is table-by-table: a preset asking for
+        // terminal mode must keep the base's speed rather than reset it.
+        let c: Config = toml::from_str(
+            "[style.default]\nreveal = { kind = \"typewriter\", cps = 12 }\n\
+             [style.a]\nreveal = { scroll = true }\n",
+        )
+        .unwrap();
+        assert!(matches!(
+            c.style("a").unwrap().reveal,
+            Reveal::Typewriter { cps, scroll: true, .. } if cps == 12.0
+        ));
+    }
+
+    #[test]
     fn tagged_enums_round_trip() {
         let c: Config = toml::from_str(
             "[style.a]\nreveal = { kind = \"instant\" }\nvanish = { kind = \"fade\", ms = 100 }\n",
@@ -815,7 +848,7 @@ mod tests {
         // without this test the user finds that out, not CI.
         let text = include_str!("../config.example.toml");
         let cfg: Config = toml::from_str(text).expect("config.example.toml must parse");
-        for name in ["default", "alert", "quiet", "spy", "wipe"] {
+        for name in ["default", "alert", "quiet", "spy", "wipe", "boot"] {
             assert!(cfg.style(name).is_ok(), "example lost [style.{name}]");
         }
     }

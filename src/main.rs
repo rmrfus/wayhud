@@ -84,6 +84,12 @@ struct Cli {
     #[arg(long)]
     jitter: Option<f64>,
 
+    /// Terminal mode: keep writing on the bottom line of the block and let
+    /// earlier lines rise. Off by default, where the reveal fills the block
+    /// downwards from its top edge instead. Needs a typewriter reveal.
+    #[arg(long)]
+    scroll: bool,
+
     /// How the text goes away: instant, fade, collapse, wash-down, wash-up,
     /// untype, dissolve. Append ":MS" to set the duration, e.g. "wash-up:700".
     #[arg(long)]
@@ -334,14 +340,20 @@ fn apply_overrides(style: &mut Style, cli: &Cli) -> Result<()> {
         } else {
             // Carry the preset's other typewriter settings across; only the
             // speed was asked about.
-            let (cursor, jitter) = match style.reveal {
-                Reveal::Typewriter { cursor, jitter, .. } => (cursor, jitter),
-                Reveal::Instant => (true, 0.0),
+            let (cursor, jitter, scroll) = match style.reveal {
+                Reveal::Typewriter {
+                    cursor,
+                    jitter,
+                    scroll,
+                    ..
+                } => (cursor, jitter, scroll),
+                Reveal::Instant => (true, 0.0, false),
             };
             Reveal::Typewriter {
                 cps,
                 cursor,
                 jitter,
+                scroll,
             }
         };
     }
@@ -352,7 +364,18 @@ fn apply_overrides(style: &mut Style, cli: &Cli) -> Result<()> {
             // Nothing to stagger, but silently ignoring a flag is worse than
             // saying why it cannot apply.
             Reveal::Instant => {
-                anyhow::bail!("--jitter needs a typewriter reveal; pass --typewriter too")
+                anyhow::bail!("--jitter needs a typewriter reveal: {}", instant_hint(cli))
+            }
+        }
+    }
+    if cli.scroll {
+        match &mut style.reveal {
+            Reveal::Typewriter { scroll, .. } => *scroll = true,
+            // Nothing is being written line by line, so there is no write head
+            // to keep at the bottom. Same rule as --jitter: say why rather
+            // than accept a flag that cannot do anything.
+            Reveal::Instant => {
+                anyhow::bail!("--scroll needs a typewriter reveal: {}", instant_hint(cli))
             }
         }
     }
@@ -373,6 +396,21 @@ fn apply_overrides(style: &mut Style, cli: &Cli) -> Result<()> {
         style.valign = v;
     }
     Ok(())
+}
+
+/// Why the reveal is instant, for a flag that is about to be refused because of
+/// it.
+///
+/// `--typewriter 0` earns its own sentence. It IS an instant reveal, so the
+/// refusal is right, but telling someone to "pass --typewriter too" when they
+/// just passed it sends them looking for a flag that is already on the command
+/// line — the value is what needs changing.
+fn instant_hint(cli: &Cli) -> &'static str {
+    if cli.typewriter == Some(0.0) {
+        "--typewriter 0 asks for an instant one, so give it a positive speed"
+    } else {
+        "pass --typewriter too, or pick a preset that types"
+    }
 }
 
 /// `wash-up`, `fade:250`, `collapse`, …
@@ -531,6 +569,7 @@ mod tests {
                 cps: 10.0,
                 cursor: false,
                 jitter: 0.0,
+                scroll: false,
             },
             ..Style::default()
         };
@@ -604,6 +643,108 @@ mod tests {
     }
 
     #[test]
+    fn scroll_flag_needs_a_typewriter() {
+        // Nothing is written line by line, so there is no write head to keep
+        // at the bottom; saying so beats a flag that quietly does nothing.
+        let mut s = Style {
+            reveal: Reveal::Instant,
+            ..Style::default()
+        };
+        let cli = Cli::parse_from(["wayhud", "x", "--scroll"]);
+        assert!(apply_overrides(&mut s, &cli).is_err());
+    }
+
+    #[test]
+    fn scroll_composes_with_typewriter_in_either_order() {
+        // --scroll on an instant PRESET is fine as long as the same command
+        // line turns the typewriter back on. Where they sit relative to each
+        // other on the command line does not come into it: clap collects the
+        // flags into a struct, and apply_overrides resolves --typewriter
+        // before --scroll whatever argv looked like.
+        for args in [
+            ["wayhud", "x", "--typewriter", "30", "--scroll"],
+            ["wayhud", "x", "--scroll", "--typewriter", "30"],
+        ] {
+            let mut s = Style {
+                reveal: Reveal::Instant,
+                ..Style::default()
+            };
+            let cli = Cli::parse_from(args);
+            apply_overrides(&mut s, &cli).unwrap();
+            assert!(
+                matches!(
+                    s.reveal,
+                    Reveal::Typewriter { cps, scroll: true, .. } if cps == 30.0
+                ),
+                "{args:?} did not compose"
+            );
+        }
+    }
+
+    #[test]
+    fn a_zero_typewriter_is_named_rather_than_asked_for_again() {
+        // "pass --typewriter too" is useless advice to someone who just passed
+        // it: the reveal is instant because the VALUE was 0, not because the
+        // flag is missing. The other branch still says what it always did.
+        for (flag, value) in [("--scroll", None), ("--jitter", Some("0.3"))] {
+            let with_zero = {
+                let mut a = vec!["wayhud", "x", "--typewriter", "0", flag];
+                a.extend(value);
+                a
+            };
+            let mut s = Style::default();
+            let err = format!(
+                "{:#}",
+                apply_overrides(&mut s, &Cli::parse_from(with_zero)).unwrap_err()
+            );
+            assert!(
+                err.contains("--typewriter 0"),
+                "{flag} blamed nothing: {err}"
+            );
+            assert!(
+                !err.contains("pass --typewriter too"),
+                "{flag} still asks for the flag it was given: {err}"
+            );
+
+            let no_flag = {
+                let mut a = vec!["wayhud", "x", flag];
+                a.extend(value);
+                a
+            };
+            let mut s = Style {
+                reveal: Reveal::Instant,
+                ..Style::default()
+            };
+            let err = format!(
+                "{:#}",
+                apply_overrides(&mut s, &Cli::parse_from(no_flag)).unwrap_err()
+            );
+            assert!(
+                err.contains("pass --typewriter too"),
+                "{flag} lost the plain hint: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn typewriter_override_keeps_the_scroll_choice() {
+        // Same contract as the cursor and the jitter: only the speed was asked
+        // about, so terminal mode must survive a bare --typewriter.
+        let mut s = Style {
+            reveal: Reveal::Typewriter {
+                cps: 10.0,
+                cursor: true,
+                jitter: 0.0,
+                scroll: true,
+            },
+            ..Style::default()
+        };
+        let cli = Cli::parse_from(["wayhud", "x", "--typewriter", "40"]);
+        apply_overrides(&mut s, &cli).unwrap();
+        assert!(matches!(s.reveal, Reveal::Typewriter { scroll: true, .. }));
+    }
+
+    #[test]
     fn jitter_flag_needs_a_typewriter() {
         let mut s = Style {
             reveal: Reveal::Instant,
@@ -632,6 +773,7 @@ mod tests {
                 cps: 10.0,
                 cursor: true,
                 jitter: 0.5,
+                scroll: false,
             },
             ..Style::default()
         };

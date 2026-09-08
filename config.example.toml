@@ -25,6 +25,9 @@ valign = "center"           # top  | center | bottom
 margin = 64                 # to the SURFACE, not the text; anchored axes only
 line_align = "left"         # alignment of lines inside the block
 timeout_ms = 5000           # hold AFTER the reveal finishes
+# The typewriter fills the block downwards from its top edge. Adding
+# scroll = true here picks the other fill - terminal mode, where the line being
+# written stays on the BOTTOM line and earlier ones rise. See [style.boot].
 reveal = { kind = "typewriter", cps = 28, cursor = true }
 # instant | fade | collapse | wash (dir = down|up) | untype | dissolve
 vanish = { kind = "collapse", ms = 420 }
@@ -52,3 +55,15 @@ vanish = { kind = "untype", ms = 900 }
 [style.wipe]
 reveal = { kind = "instant" }
 vanish = { kind = "wash", ms = 600, dir = "up" }
+
+# Terminal mode: each line lands on the bottom row of the block and pushes what
+# came before it up. Everything else is the plain typewriter above - only the
+# fill differs. The surface never moves either way, so this works under any
+# valign; with "bottom" the writing stays on the bottom margin throughout.
+[style.boot]
+font = "Monospace 28"
+halign = "left"
+valign = "bottom"
+margin = 32
+reveal = { kind = "typewriter", cps = 40, cursor = true, scroll = true }
+vanish = { kind = "fade", ms = 300 }

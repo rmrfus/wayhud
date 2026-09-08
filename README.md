@@ -93,6 +93,7 @@ file format.
 | `--position`    | —         | `center`, `top`, `bottom-right`, …                             |
 | `--typewriter`  | —         | Characters/second; `0` reveals instantly                       |
 | `--jitter`      | —         | Stagger keystroke gaps by ±this fraction (0–1)                 |
+| `--scroll`      | —         | Terminal mode: write on the bottom line, lift the rest         |
 | `--vanish`      | —         | Exit effect, optionally `:MS` (not on `instant`) — see below   |
 | `--no-sound`    | —         | Stay quiet regardless of the style                             |
 | `--raw`         | —         | Take the argument literally (no `\n` / `\t` expansion)         |
@@ -106,9 +107,9 @@ message that would exceed it is refused rather than shown: nothing can dismiss a
 HUD early, so a fat-fingered `--timeout`, a `--typewriter 0.01` or an absurd
 `--vanish fade:99999999` would all strand it on screen.
 
-`--jitter` needs a typewriter reveal: with `--typewriter 0`, or a preset whose
-`reveal` is instant, it is an error rather than a flag that quietly does
-nothing.
+`--jitter` and `--scroll` both need a typewriter reveal: with `--typewriter 0`,
+or a preset whose `reveal` is instant, either one is an error rather than a flag
+that quietly does nothing.
 
 `\n` and `\t` in the argument are expanded, because sway's `exec` runs through
 `sh`, which has no `$'...'`. Text arriving on stdin is used verbatim.
@@ -125,6 +126,39 @@ for its path); if none of that works, it fails rather than guessing. A named
 connector that doesn't exist is reported on stderr and skipped, so
 `-o DP-3,DP-9` still shows up on DP-3 with DP-9 unplugged; matching nothing at
 all is an error.
+
+## Terminal mode
+
+The typewriter fills a message in one of two ways and both ship. By default it
+fills the block **downwards from the top**: the box is sized for the finished
+message up front, so the write head starts at the top edge and walks down
+through the room reserved for the rest. `--scroll`, or `scroll = true` inside a
+typewriter `reveal`, picks the other one — the write head stays on the **last**
+line of the block, and reaching a newline lifts everything already written by
+one line.
+
+```sh
+# terminal: every line lands on the bottom row and pushes the rest up
+wayhud --scroll --position bottom-left \
+       "CHECKING DISKS\nMOUNTING /\nBRINGING UP eth0\nOK"
+
+# the default: the same message, filled downwards from the top
+wayhud --position bottom-left \
+       "CHECKING DISKS\nMOUNTING /\nBRINGING UP eth0\nOK"
+```
+
+Nothing else differs between the two. The surface is sized from the finished
+message and placed before the first character is drawn either way, so the mode
+moves the text inside the box and never the box itself — which is why it needs
+no particular anchor and holds under any `--position`. With `bottom` the
+writing sits on the bottom margin the whole way through, which is the terminal
+look; with `center` or `top` the block stays where it was put and fills from
+its own bottom edge upwards. A message with no newlines draws identically in
+both modes — there is nothing above it to lift.
+
+An `untype` vanish runs the terminal rule backwards, because the offset follows
+the write head rather than the clock: the block slides back down as the lines
+are eaten.
 
 ## Vanish effects
 
@@ -201,11 +235,13 @@ vanish = { kind = "wash", ms = 300, dir = "up" }
 | `sound`         | table                   | on, 2100 Hz, gain 0.22     | The typewriter blip                                   |
 
 `reveal` is `{ kind = "instant" }` or
-`{ kind = "typewriter", cps = F, cursor = BOOL, jitter = F }`, with `cps`
-positive — for no typewriter the kind must say `instant`. `jitter` (0–1,
-default 0) staggers each keystroke gap by up to that fraction either way, so
-the typing stops sounding like a metronome; the blips use the same moments as
-the glyphs, so they cannot drift apart.
+`{ kind = "typewriter", cps = F, cursor = BOOL, jitter = F, scroll = BOOL }`,
+with `cps` positive — for no typewriter the kind must say `instant`. `jitter`
+(0–1, default 0) staggers each keystroke gap by up to that fraction either way,
+so the typing stops sounding like a metronome; the blips use the same moments
+as the glyphs, so they cannot drift apart. `scroll` (default false) chooses
+which way the block is filled: left alone, downwards from the top edge as it
+always was; set true, [terminal mode](#terminal-mode).
 
 `vanish` takes the kinds from the *In a preset* column under
 [Vanish effects](#vanish-effects) plus `ms`; note that `wash` is one kind there
