@@ -1,4 +1,4 @@
-.TH WAYHUD 1 "2026-09-01" "wayhud" "User Commands"
+.TH WAYHUD 1 "2026-09-09" "wayhud" "User Commands"
 .SH NAME
 wayhud \- layer\-shell text overlay for sway
 .SH SYNOPSIS
@@ -15,11 +15,10 @@ The overlay does not intercept pointer or keyboard input.
 is read from the argument, or from standard input when omitted or given as
 .BR - .
 Messages over 100000 characters are rejected with an error. Stdin reading
-stops at EOF or 400001 bytes, whichever comes first. Reaching the byte limit
-is an error. Nothing displays before EOF: a quiet
+stops at EOF or 400001 bytes, whichever comes first; reaching that limit is
+an error. Nothing displays before EOF, so a quiet
 .B tail \-f
-can wait indefinitely; a continuous stream that reaches the limit exits
-with an error.
+waits indefinitely.
 .PP
 Arguments expand
 .BR \en ,
@@ -107,7 +106,7 @@ Style preset from the config file. Default:
 An unknown name is an error.
 .TP
 .BR \-\-font " \fIDESC\fR"
-Pango font description, e.g.
+Pango font description, e.g.\&
 .B "\(dqMonospace 72\(dq"
 or
 .BR "\(dqFiraCode Nerd Font 72\(dq" .
@@ -283,7 +282,10 @@ or
 .TP
 .BR \-\-config " \fIPATH\fR"
 Config file to read. Default:
-.IR $XDG_CONFIG_HOME/wayhud/config.toml .
+.IR $XDG_CONFIG_HOME/wayhud/config.toml ,
+or
+.I ~/.config/wayhud/config.toml
+when that variable is unset, empty or relative.
 .TP
 .BR \-h ", " \-\-help
 Print a usage summary and exit.
@@ -334,25 +336,55 @@ Audio failures are reported on standard error; the message still displays.
 .SH EXAMPLES
 .TP
 A message on the focused output, default style:
-.B wayhud \(dqSYSTEM ONLINE\(dq
+.nf
+.ft B
+wayhud \(dqSYSTEM ONLINE\(dq
+.ft R
+.fi
 .TP
 Ten seconds, every screen, pinned to the top:
-.B wayhud \-o all \-t 10 \-\-position top \(dqBUILD FAILED\(dq
+.nf
+.ft B
+wayhud \-o all \-t 10 \-\-position top \(dqBUILD FAILED\(dq
+.ft R
+.fi
 .TP
 Two lines from a keybinding in the sway config:
-.B bindsym $mod+Shift+h exec wayhud \(dqLOCKED\enBACK IN 5\(dq
+.nf
+.ft B
+bindsym $mod+Shift+h exec wayhud \(dqLOCKED\enBACK IN 5\(dq
+.ft R
+.fi
 .TP
 Piped in, no animation, no sound:
-.B echo \(dq$(uptime)\(dq | wayhud \-\-reveal instant \-\-sound off
+.nf
+.ft B
+echo \(dq$(uptime)\(dq | wayhud \-\-reveal instant \-\-sound off
+.ft R
+.fi
 .TP
 Self\-destructing note:
-.B wayhud \-s spy \-\-vanish \(aquntype,ms=900\(aq \(dqTHIS MESSAGE WILL SELF DESTRUCT\(dq
+.nf
+.ft B
+wayhud \-s spy \-\-vanish \(aquntype,ms=900\(aq \e
+       \(dqTHIS MESSAGE WILL SELF DESTRUCT\(dq
+.ft R
+.fi
 .TP
 A boot log crawling up the bottom corner:
-.B wayhud \-\-reveal \(aqscroll=true\(aq \-\-position bottom\-left \(dqCHECKING DISKS\enMOUNTING /\enOK\(dq
+.nf
+.ft B
+wayhud \-\-reveal \(aqscroll=true\(aq \-\-position bottom\-left \e
+       \(dqCHECKING DISKS\enMOUNTING /\enOK\(dq
+.ft R
+.fi
 .TP
 A quieter, slower blip:
-.B wayhud \-\-sound \(aqfreq=1200,gain=0.1,every=2\(aq \(dqSTANDING BY\(dq
+.nf
+.ft B
+wayhud \-\-sound \(aqfreq=1200,gain=0.1,every=2\(aq \(dqSTANDING BY\(dq
+.ft R
+.fi
 .SH ENVIRONMENT
 .TP
 .B I3SOCK
