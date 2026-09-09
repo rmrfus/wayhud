@@ -68,7 +68,7 @@ impl Envelope {
         let attack = p.attack_ms / 1000.0;
         let decay = p.decay_ms / 1000.0;
         let body = attack + decay;
-        let fade = (0.005_f64).min(body / 4.0); // Up to 5 ms
+        let fade = (0.005_f64).min(body / 4.0); // 5 ms, or body/4 for tiny blips
         let total = body + fade;
 
         // decay_ms = time to -60 dB => exp(-decay/tau) = 1/1000 => tau =
