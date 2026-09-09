@@ -13,6 +13,9 @@ outline = "#1d2021"         # gruvbox bg0_hard
 # outline_width = 5.0      # omit to scale with font size (size / 14)
 # Glow is drawn behind the outline. radius = 0 disables inherited glow.
 # glow = { color = "#b8bb26", radius = 12.0, alpha = 0.55 }
+# Raster bands over the finished message. period is in DEVICE pixels, so the
+# pitch holds at any font size. strength = 0 disables an inherited raster.
+# scanlines = { period = 4.0, strength = 0.35, duty = 0.5 }
 halign = "center"           # left | center | right
 valign = "center"           # top  | center | bottom
 margin = 64                 # surface-to-edge gap; anchored axes only
@@ -42,6 +45,19 @@ sound = { enabled = false }
 color = "#8ec07c"           # gruvbox bright aqua
 reveal = { kind = "typewriter", cps = 18, cursor = true, jitter = 0.35 }
 vanish = { kind = "untype", ms = 900 }
+
+# A tube in the corner: green phosphor, bloom, and a raster over both.
+[style.crt]
+font = "Monospace 40"
+color = "#33ff33"
+outline = "none"
+glow = { color = "#33ff33", radius = 16.0, alpha = 0.75 }
+scanlines = { period = 4.0, strength = 0.55, duty = 0.5 }
+halign = "left"
+valign = "bottom"
+margin = 48
+reveal = { kind = "typewriter", cps = 35, jitter = 0.2, scroll = true }
+vanish = { kind = "collapse", ms = 500 }
 
 [style.wipe]
 reveal = { kind = "instant" }

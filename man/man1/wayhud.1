@@ -147,6 +147,30 @@ for no halo. Fields:
 The halo is drawn behind the outline. Increasing its radius adds padding
 and reduces the available wrapping width.
 .TP
+.BR \-\-scanlines " \fISPEC\fR"
+Cut dimmed horizontal bands through the message, the way a raster scan does,
+or
+.B none
+for a flat one. The bare value is
+.BR period .
+Fields:
+.B period
+(device pixels between band centres, 2 to 128),
+.B strength
+(how far a band dims what is under it, 0 to 1),
+.B duty
+(fraction of each period the band covers, 0 to below 1).
+.IP
+The bands are measured in
+.I device
+pixels, so the raster belongs to the screen and does not scale with the font:
+one period is one period on a HiDPI output too. They are applied over the
+finished message, so they cut the glow along with the glyphs, and they do not
+widen the padding.
+.IP
+.B strength
+of 0 switches off a raster inherited from a preset.
+.TP
 .BR \-\-position " \fISPEC\fR"
 Where the text block sits. The bare value is a placement word:
 .BR center ,

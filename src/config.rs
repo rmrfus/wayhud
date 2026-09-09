@@ -19,6 +19,11 @@ pub const MAX_TEXT_CHARS: usize = 100_000;
 /// padding, reducing the wrapping width and enlarging the glow mask.
 pub const MAX_EDGE_PX: f64 = 128.0;
 
+/// Widest scanline period, in device pixels. Unlike [`MAX_EDGE_PX`] this does
+/// not feed the padding; it is bounded so the mask cannot be built from a
+/// value that leaves a single gap across the whole message.
+pub const MAX_SCANLINE_PERIOD_PX: f64 = 128.0;
+
 /// Physical horizontal placement, independent of writing direction.
 /// `Center` leaves both layer-shell edges unanchored.
 #[derive(Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
@@ -166,6 +171,30 @@ impl Default for Glow {
     }
 }
 
+/// Horizontal gaps cut through the glyphs, their outline and their halo, to
+/// the rhythm of a raster scan. `strength = 0` disables an inherited set.
+#[derive(Deserialize, Clone, Debug)]
+#[serde(default, deny_unknown_fields)]
+pub struct Scanlines {
+    /// Distance between gap centres, in DEVICE pixels: the pattern belongs to
+    /// the screen, so it does not scale with the font.
+    pub period: f64,
+    /// How far a gap darkens what is under it, 0 (invisible) to 1 (opaque).
+    pub strength: f64,
+    /// Fraction of each period the gap covers.
+    pub duty: f64,
+}
+
+impl Default for Scanlines {
+    fn default() -> Self {
+        Scanlines {
+            period: 4.0,
+            strength: 0.35,
+            duty: 0.5,
+        }
+    }
+}
+
 /// Typewriter audio parameters, named to match `blyamk`.
 #[derive(Deserialize, Clone, Debug)]
 #[serde(default, deny_unknown_fields)]
@@ -209,6 +238,8 @@ pub struct Style {
     pub line_align: LineAlign,
     /// Resolved glow settings; `None` disables glow.
     pub glow: Option<Glow>,
+    /// Resolved scanline settings; `None` disables them.
+    pub scanlines: Option<Scanlines>,
     /// Hold time after the reveal finishes.
     pub timeout_ms: u64,
     pub reveal: Reveal,
@@ -228,6 +259,7 @@ impl Default for Style {
             margin: 64,
             line_align: LineAlign::Left,
             glow: None,
+            scanlines: None,
             timeout_ms: 5000,
             reveal: Reveal::Typewriter {
                 cps: d_cps(),
@@ -282,6 +314,26 @@ impl Style {
                 (0.0..=1.0).contains(&glow.alpha),
                 "glow.alpha must be between 0 and 1, got {}",
                 glow.alpha
+            );
+        }
+        if let Some(sl) = &self.scanlines {
+            // Below two device pixels a gap and its gap-free half share one
+            // pixel, which averages to a flat wash rather than a raster.
+            anyhow::ensure!(
+                (2.0..=MAX_SCANLINE_PERIOD_PX).contains(&sl.period),
+                "scanlines.period must be between 2 and {MAX_SCANLINE_PERIOD_PX}, got {}",
+                sl.period
+            );
+            anyhow::ensure!(
+                (0.0..=1.0).contains(&sl.strength),
+                "scanlines.strength must be between 0 and 1, got {}",
+                sl.strength
+            );
+            // A duty of 1 would erase the text; 0 leaves nothing to see.
+            anyhow::ensure!(
+                (0.0..1.0).contains(&sl.duty),
+                "scanlines.duty must be at least 0 and below 1, got {}",
+                sl.duty
             );
         }
         anyhow::ensure!(
@@ -691,6 +743,48 @@ mod tests {
         assert!(c.style("a").is_err());
         let c: Config = toml::from_str("[style.a]\ntimeout_ms = 3600000\n").unwrap();
         assert!(c.style("a").is_ok());
+    }
+
+    #[test]
+    fn scanlines_merge_field_by_field_like_the_other_tables() {
+        let c: Config = toml::from_str(
+            "[style.default]\nscanlines = { period = 6.0, strength = 0.5 }\n\
+             [style.a]\nscanlines = { strength = 0.2 }\n",
+        )
+        .unwrap();
+        let sl = c.style("a").unwrap().scanlines.expect("scanlines");
+        assert_eq!(sl.strength, 0.2);
+        assert_eq!(sl.period, 6.0, "period must survive from the base");
+        assert_eq!(sl.duty, Scanlines::default().duty);
+    }
+
+    #[test]
+    fn a_preset_takes_back_an_inherited_raster_with_zero_strength() {
+        // TOML has no null, the same reason `outline` needs the literal
+        // "none" and a glow needs radius = 0.
+        let c: Config = toml::from_str(
+            "[style.default]\nscanlines = { period = 4.0 }\n\
+             [style.a]\nscanlines = { strength = 0.0 }\n",
+        )
+        .unwrap();
+        // The file keeps the table; dropping it is the resolved Hud's job, in
+        // `a_zero_strength_raster_is_no_raster_at_all`.
+        let sl = c.style("a").unwrap().scanlines.expect("scanlines");
+        assert_eq!(sl.strength, 0.0);
+        assert_eq!(sl.period, 4.0, "period still merges from the base");
+    }
+
+    #[test]
+    fn scanline_ranges_are_checked() {
+        for spec in [
+            "scanlines = { period = 1.0 }",
+            "scanlines = { period = 999.0 }",
+            "scanlines = { strength = 2.0 }",
+            "scanlines = { duty = 1.0 }",
+        ] {
+            let c: Config = toml::from_str(&format!("[style.a]\n{spec}\n")).unwrap();
+            assert!(c.style("a").is_err(), "{spec} passed validation");
+        }
     }
 
     #[test]

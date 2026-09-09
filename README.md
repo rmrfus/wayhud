@@ -4,8 +4,9 @@
 [![Release](https://img.shields.io/github/v/release/rmrfus/wayhud?logo=github)](https://github.com/rmrfus/wayhud/releases/latest)
 [![License](https://img.shields.io/github/license/rmrfus/wayhud)](LICENSE)
 
-Text overlays for sway, with typewriter animation, a caret, synthesised sound
-and exit effects. The overlay is click-through and does not take keyboard focus.
+Text overlays for sway, with typewriter animation, a caret, synthesised sound,
+scanlines and exit effects. The overlay is click-through and does not take
+keyboard focus.
 
 ![wayhud typing a message, then dissolving](assets/demo.gif)
 
@@ -74,6 +75,7 @@ See `man 1 wayhud` for CLI details and `man 5 wayhud` for configuration.
 | `--color`       | —         | Any CSS colour GTK parses                                          |
 | `--outline`     | —         | Colour or `none`; `width=`                                         |
 | `--glow`        | —         | Colour or `none`; `radius=`, `alpha=`                              |
+| `--scanlines`   | —         | Period in device px or `none`; `strength=`, `duty=`                |
 | `--position`    | —         | `bottom-left`, `center`, …; `halign=`, `valign=`                   |
 | `--margin`      | —         | Gap from the anchored edge, logical px                             |
 | `--line-align`  | —         | `left`, `center`, `right` — lines inside the block                 |
@@ -201,6 +203,7 @@ for all keys, defaults and ranges.
 | `outline`       | CSS colour              | `"#1d2021"`                | Stroke colour; `"none"` disables it                   |
 | `outline_width` | float, 0–128 logical px | font size / 14             | Stroke width; unset it scales with the font           |
 | `glow`          | table                   | —                          | Halo behind the glyphs; `radius = 0` disables it      |
+| `scanlines`     | table                   | —                          | Raster bands over the message; `strength = 0` disables|
 | `halign`        | `left` `center` `right` | `center`                   | Horizontal placement on the output                    |
 | `valign`        | `top` `center` `bottom` | `center`                   | Vertical placement                                    |
 | `margin`        | int, logical px         | `64`                       | Gap from the anchored edge to the surface             |
@@ -219,6 +222,11 @@ A few settings affect layout:
   behind the outline. A larger radius increases padding and reduces wrapping
   width. `radius = 0` disables inherited glow.
 - `line_align` aligns lines within the block, independently of its position.
+- `scanlines = { period = 4.0, strength = 0.35, duty = 0.5 }` cuts dimmed
+  bands across the message. `period` is in **device** pixels, so the raster
+  keeps its pitch whatever the font size or output scale. The bands go over
+  the finished message, cutting the glow with the glyphs, and do not widen
+  the padding. `strength = 0` disables an inherited raster.
 
 `Monospace` uses the system's fontconfig default. Check named families with
 `fc-match "Family Name"`; unavailable fonts fall back silently.

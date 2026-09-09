@@ -21,8 +21,8 @@ use clap::Parser;
 use gtk::glib;
 
 use config::{
-    Config, Dir, Glow, HAlign, LineAlign, MAX_LIFETIME_MS, MAX_TEXT_CHARS, Reveal, Sound, Style,
-    VAlign, Vanish,
+    Config, Dir, Glow, HAlign, LineAlign, MAX_LIFETIME_MS, MAX_TEXT_CHARS, Reveal, Scanlines,
+    Sound, Style, VAlign, Vanish,
 };
 use hud::Hud;
 use outputs::OutputSpec;
@@ -69,6 +69,11 @@ struct Cli {
     /// "#b8bb26,radius=12,alpha=0.7".
     #[arg(long)]
     glow: Option<String>,
+
+    /// Scanline period in device pixels, or "none". Takes strength=0..1 and
+    /// duty=0..1. E.g. "4,strength=0.35".
+    #[arg(long)]
+    scanlines: Option<String>,
 
     /// Placement: center, top, bottom-right, … Takes halign= and valign=.
     #[arg(long)]
@@ -296,6 +301,9 @@ fn apply_overrides(style: &mut Style, cli: &Cli) -> Result<()> {
     if let Some(g) = &cli.glow {
         style.glow = parse_glow(g, style.glow.as_ref())?;
     }
+    if let Some(sl) = &cli.scanlines {
+        style.scanlines = parse_scanlines(sl, style.scanlines.as_ref())?;
+    }
     if let Some(t) = cli.timeout {
         // Validate seconds before conversion to u64, which would saturate
         // negatives to zero.
@@ -330,6 +338,35 @@ fn apply_overrides(style: &mut Style, cli: &Cli) -> Result<()> {
 }
 
 /// Parse placement. A bare name sets both axes; named fields set one each.
+/// The bare value is the period: the field a raster is usually described by.
+fn parse_scanlines(spec: &str, current: Option<&Scanlines>) -> Result<Option<Scanlines>> {
+    let mut s = Spec::parse("--scanlines", spec)?;
+    let period = s.headline("period")?;
+    let strength = s.take_parsed::<f64>("strength")?;
+    let duty = s.take_parsed::<f64>("duty")?;
+    s.finish()?;
+    if period == Some("none") {
+        anyhow::ensure!(
+            strength.is_none() && duty.is_none(),
+            "--scanlines none takes no other fields; there is no raster to describe"
+        );
+        return Ok(None);
+    }
+    let period = period
+        .map(|v| {
+            v.parse::<f64>()
+                .map_err(|e| anyhow::anyhow!("--scanlines: bad value {v:?} for period ({e})"))
+        })
+        .transpose()?;
+    // Use the built-in raster when switching one on through a field-only spec.
+    let base = current.cloned().unwrap_or_default();
+    Ok(Some(Scanlines {
+        period: period.unwrap_or(base.period),
+        strength: strength.unwrap_or(base.strength),
+        duty: duty.unwrap_or(base.duty),
+    }))
+}
+
 fn parse_position(spec: &str, style: &Style) -> Result<(HAlign, VAlign)> {
     let mut s = Spec::parse("--position", spec)?;
     let (mut halign, mut valign) = match s.bare() {
@@ -748,6 +785,66 @@ mod tests {
     }
 
     #[test]
+    fn scanlines_reach_every_one_of_their_three_fields() {
+        let s = with("--scanlines", "6,strength=0.5,duty=0.25").unwrap();
+        let sl = s.scanlines.expect("scanlines");
+        assert_eq!(sl.period, 6.0);
+        assert_eq!(sl.strength, 0.5);
+        assert_eq!(sl.duty, 0.25);
+    }
+
+    #[test]
+    fn scanline_fields_not_mentioned_come_from_the_preset() {
+        let mut s = Style {
+            scanlines: Some(Scanlines {
+                period: 10.0,
+                strength: 0.9,
+                duty: 0.3,
+            }),
+            ..Style::default()
+        };
+        let cli = Cli::parse_from(["wayhud", "x", "--scanlines", "strength=0.2"]);
+        apply_overrides(&mut s, &cli).unwrap();
+        let sl = s.scanlines.expect("scanlines");
+        assert_eq!(sl.period, 10.0);
+        assert_eq!(sl.duty, 0.3);
+        assert_eq!(sl.strength, 0.2);
+    }
+
+    #[test]
+    fn scanlines_none_switches_off_an_inherited_raster() {
+        let mut s = Style {
+            scanlines: Some(Scanlines::default()),
+            ..Style::default()
+        };
+        let cli = Cli::parse_from(["wayhud", "x", "--scanlines", "none"]);
+        apply_overrides(&mut s, &cli).unwrap();
+        assert!(s.scanlines.is_none());
+        assert!(with("--scanlines", "none,strength=0.4").is_err());
+    }
+
+    #[test]
+    fn a_scanline_field_over_a_preset_with_none_turns_them_on() {
+        let s = with("--scanlines", "strength=0.5").unwrap();
+        let sl = s.scanlines.expect("scanlines");
+        assert_eq!(sl.strength, 0.5);
+        assert_eq!(sl.period, Scanlines::default().period);
+    }
+
+    #[test]
+    fn a_scanline_period_that_is_not_a_number_is_refused_as_one() {
+        // The only flag whose bare value is a number rather than a word, so a
+        // typo must come back about the period and not about an unknown kind.
+        let e = with("--scanlines", "wide").unwrap_err().to_string();
+        assert!(e.contains("period"), "{e}");
+        // And a misspelt field still lists the ones that exist.
+        let e = with("--scanlines", "4,thickness=0.5")
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("strength"), "{e}");
+    }
+
+    #[test]
     fn reveal_reaches_every_typewriter_field() {
         let s = with(
             "--reveal",
@@ -1021,6 +1118,9 @@ mod tests {
             ("--sound", "decay_ms=1e9"),
             ("--sound", "gain=40"),
             ("--sound", "every=0"),
+            ("--scanlines", "1"),
+            ("--scanlines", "4,strength=1.5"),
+            ("--scanlines", "4,duty=1"),
         ] {
             let style = with(flag, spec).expect("parsing should accept it");
             assert!(
@@ -1044,6 +1144,8 @@ mod tests {
             "#020202,width=3",
             "--glow",
             "#030303,radius=9,alpha=0.4",
+            "--scanlines",
+            "6,strength=0.5,duty=0.25",
             "--position",
             "top-right",
             "--margin",
@@ -1073,6 +1175,8 @@ mod tests {
         assert_eq!(s.line_align, LineAlign::Center);
         let g = s.glow.expect("glow");
         assert_eq!((g.color.as_str(), g.radius, g.alpha), ("#030303", 9.0, 0.4));
+        let sl = s.scanlines.expect("scanlines");
+        assert_eq!((sl.period, sl.strength, sl.duty), (6.0, 0.5, 0.25));
         assert_eq!(s.timeout_ms, 2000);
         assert!(
             matches!(

@@ -11,7 +11,7 @@ use gtk::pango;
 use gtk::prelude::*;
 use gtk_layer_shell::{Edge, KeyboardMode, LayerShell};
 
-use crate::config::{Dir, Glow, HAlign, LineAlign, Reveal, Style, VAlign, Vanish};
+use crate::config::{Dir, Glow, HAlign, LineAlign, Reveal, Scanlines, Style, VAlign, Vanish};
 use crate::timeline::{Phase, Timeline};
 
 /// Transparent padding in logical pixels, calculated separately for each axis.
@@ -30,6 +30,8 @@ pub struct Hud {
     outline: Option<gdk::RGBA>,
     /// Resolved glow parameters. Absent when disabled or radius is zero.
     glow: Option<(gdk::RGBA, Glow)>,
+    /// Resolved scanline parameters. Absent when disabled or strength is zero.
+    scanlines: Option<Scanlines>,
     font: pango::FontDescription,
     outline_width: f64,
     /// Fixed caret width in logical pixels, measured from the advance of `M`.
@@ -59,6 +61,13 @@ impl Hud {
             }
             _ => None,
         };
+        // Zero strength collapses to no scanlines here rather than at every use
+        // site: it is how a preset switches off a set inherited from the base.
+        let scanlines = style
+            .scanlines
+            .as_ref()
+            .filter(|s| s.strength > 0.0)
+            .cloned();
         let font = pango::FontDescription::from_string(&style.font);
         // Reject an empty font family; Pango would otherwise fall back
         // silently.
@@ -88,6 +97,7 @@ impl Hud {
             fill,
             outline,
             glow,
+            scanlines,
             outline_width,
             caret_width,
             font,
@@ -315,6 +325,41 @@ fn box_pass(
     }
 }
 
+/// An A8 raster of dimmed horizontal bands, sized to the whole padded surface
+/// and rendered at DEVICE resolution so the gaps land on the physical pixel
+/// grid. Built in logical pixels they would fall on half-pixels at `scale = 2`
+/// and beat against it, which reads as moire rather than as a raster.
+///
+/// Depends on nothing that changes, so the caller builds it once per output.
+/// Held as a whole surface rather than a repeating tile because `period` is a
+/// float: a tile would have to round it to a whole number of pixels, and the
+/// rounding error would walk down the message as a drifting band.
+fn scanline_mask(w: i32, h: i32, sl: &Scanlines) -> Option<gtk::cairo::ImageSurface> {
+    if w <= 0 || h <= 0 {
+        return None;
+    }
+    let surface = gtk::cairo::ImageSurface::create(gtk::cairo::Format::A8, w, h).ok()?;
+    {
+        let mcr = gtk::cairo::Context::new(&surface).ok()?;
+        // Colour is ignored in A8; only the alpha channel survives. Everything
+        // outside a gap passes through untouched.
+        mcr.set_source_rgba(1.0, 1.0, 1.0, 1.0);
+        let _ = mcr.paint();
+        // Source, not Over: a gap dims what is under it to a set level rather
+        // than compositing towards it, so `strength` means what it says.
+        mcr.set_operator(gtk::cairo::Operator::Source);
+        mcr.set_source_rgba(1.0, 1.0, 1.0, 1.0 - sl.strength);
+        let gap = sl.period * sl.duty;
+        let mut y = 0.0;
+        while y < f64::from(h) {
+            mcr.rectangle(0.0, y, f64::from(w), gap);
+            y += sl.period;
+        }
+        let _ = mcr.fill();
+    }
+    Some(surface)
+}
+
 /// Vertical offset that places the current line at the bottom of the fixed
 /// text block. Use the caret line box to handle mixed font heights.
 /// The visible count drives the offset during both reveal and untype.
@@ -375,12 +420,19 @@ pub fn present(
     let layout = Rc::new(hud.layout_for(&area, max_width));
     // Cache glow by visible character count at this monitor's scale.
     // `usize::MAX` marks an unbuilt mask; zero is a valid visible count.
-    let glow_scale = f64::from(monitor.scale_factor());
+    let device_scale = f64::from(monitor.scale_factor());
     let glow_cache: RefCell<(usize, Option<Rc<gtk::cairo::ImageSurface>>)> =
         RefCell::new((usize::MAX, None));
     let (tw, th) = layout.pixel_size();
     area.set_content_width(tw + (pad.x * 2.0) as i32);
     area.set_content_height(th + (pad.y * 2.0) as i32);
+    // Built once per output, like the layout: the raster depends on nothing
+    // that changes, and a vanish repaints every frame.
+    let scanlines = hud.scanlines.as_ref().and_then(|sl| {
+        let w = ((f64::from(tw) + pad.x * 2.0) * device_scale).ceil() as i32;
+        let h = ((f64::from(th) + pad.y * 2.0) * device_scale).ceil() as i32;
+        scanline_mask(w, h, sl).map(Rc::new)
+    });
 
     let frame = Rc::new(Frame {
         t0: Cell::new(None),
@@ -404,7 +456,7 @@ pub fn present(
                         hud.timeline.chars(),
                         g.radius,
                         pad,
-                        glow_scale,
+                        device_scale,
                     );
                     *cache = (visible, mask.map(Rc::new));
                 }
@@ -415,6 +467,7 @@ pub fn present(
                 &hud,
                 &layout,
                 glow.as_ref().map(|(m, c, a)| (m.as_ref(), *c, *a)),
+                scanlines.as_ref().map(|m| (m.as_ref(), device_scale)),
                 phase,
                 frame.blink.get(),
             );
@@ -515,6 +568,7 @@ fn draw(
     hud: &Hud,
     layout: &pango::Layout,
     glow: Option<(&gtk::cairo::ImageSurface, gdk::RGBA, f64)>,
+    scanlines: Option<(&gtk::cairo::ImageSurface, f64)>,
     phase: Phase,
     caret_on: bool,
 ) {
@@ -544,6 +598,13 @@ fn draw(
     } else {
         0.0
     };
+
+    // The raster belongs to the screen rather than to the message, so it goes
+    // on outside every transform below: a collapse then squashes the picture
+    // under stationary gaps, the way a tube does.
+    if scanlines.is_some() {
+        cr.push_group();
+    }
 
     let _ = cr.save();
     cr.translate(pad.x, pad.y + scroll);
@@ -626,6 +687,16 @@ fn draw(
     }
 
     let _ = cr.restore();
+
+    if let Some((mask, scale)) = scanlines {
+        let _ = cr.pop_group_to_source();
+        // The mask is at device resolution while the context is in logical
+        // pixels. Scaling the context would carry the popped group with it, so
+        // the conversion goes into the pattern matrix instead.
+        let pattern = gtk::cairo::SurfacePattern::create(mask);
+        pattern.set_matrix(gtk::cairo::Matrix::new(scale, 0.0, 0.0, scale, 0.0, 0.0));
+        let _ = cr.mask(pattern);
+    }
 }
 
 /// Paint the glow mask without further clipping. Inverse-scale from device
@@ -1218,6 +1289,129 @@ mod tests {
         );
     }
 
+    /// Total coverage of each row of a rendered message, so a test can compare
+    /// what a scanline gap let through against what the row beside it did.
+    fn row_sums(hud: &Hud, layout: &pango::Layout, scale: f64) -> Vec<u32> {
+        let pad = hud.pad();
+        let (tw, th) = layout.pixel_size();
+        let w = (f64::from(tw) + pad.x * 2.0).ceil() as i32;
+        let h = (f64::from(th) + pad.y * 2.0).ceil() as i32;
+        let mask = hud.scanlines.as_ref().and_then(|sl| {
+            scanline_mask(
+                (f64::from(w) * scale) as i32,
+                (f64::from(h) * scale) as i32,
+                sl,
+            )
+        });
+        let mut surface =
+            gtk::cairo::ImageSurface::create(gtk::cairo::Format::A8, w, h).expect("surface");
+        {
+            let cr = gtk::cairo::Context::new(&surface).expect("context");
+            draw(
+                &cr,
+                hud,
+                layout,
+                None,
+                mask.as_ref().map(|m| (m, scale)),
+                Phase::Hold,
+                false,
+            );
+        }
+        surface.flush();
+        let stride = surface.stride() as usize;
+        let data = surface.data().expect("pixels");
+        (0..h as usize)
+            .map(|y| {
+                (0..w as usize)
+                    .map(|x| u32::from(data[y * stride + x]))
+                    .sum()
+            })
+            .collect()
+    }
+
+    fn scanline_style(strength: f64) -> Style {
+        Style {
+            font: "Sans 72".into(),
+            scanlines: Some(crate::config::Scanlines {
+                period: 4.0,
+                strength,
+                duty: 0.5,
+            }),
+            ..Style::default()
+        }
+    }
+
+    #[test]
+    fn a_gap_dims_to_the_strength_asked_for_and_the_rest_stays_clear() {
+        let sl = crate::config::Scanlines {
+            period: 4.0,
+            strength: 0.75,
+            duty: 0.5,
+        };
+        let mut mask = scanline_mask(8, 8, &sl).expect("mask");
+        mask.flush();
+        let stride = mask.stride() as usize;
+        let data = mask.data().expect("pixels");
+        // duty 0.5 of period 4: rows 0-1 are gap, rows 2-3 are clear.
+        for (y, want) in [(0, 64u8), (1, 64), (2, 255), (3, 255), (4, 64), (6, 255)] {
+            let got = data[y * stride];
+            assert!(got.abs_diff(want) <= 1, "row {y}: wanted {want}, got {got}");
+        }
+    }
+
+    #[test]
+    fn scanlines_dim_the_ink_they_cross() {
+        // Against the same message drawn without them, so glyph antialiasing
+        // cannot be mistaken for a gap: half of every period is dimmed to
+        // 1 - strength, which must show up as that share of the total ink.
+        let strength = 0.6;
+        let bare = Hud::new(
+            Style {
+                font: "Sans 72".into(),
+                ..Style::default()
+            },
+            "MMMM".into(),
+            1,
+        )
+        .unwrap();
+        let striped = Hud::new(scanline_style(strength), "MMMM".into(), 1).unwrap();
+        let layout = bare_layout(&bare.text, &bare.style.font);
+        let clear: u32 = row_sums(&bare, &layout, 1.0).iter().sum();
+        let dimmed: u32 = row_sums(&striped, &layout, 1.0).iter().sum();
+        assert!(clear > 0, "nothing was drawn at all");
+        // duty 0.5 leaves half the ink untouched and dims the other half.
+        let want = 1.0 - strength * 0.5;
+        let got = f64::from(dimmed) / f64::from(clear);
+        assert!(
+            (got - want).abs() < 0.05,
+            "raster passed {got:.3} of the ink, expected about {want:.3}"
+        );
+    }
+
+    #[test]
+    fn scanlines_do_not_change_the_surface_size() {
+        // The raster is painted inside the padding, so unlike the glow it must
+        // not widen it; a message would otherwise move away from its edge.
+        let bare = Hud::new(
+            Style {
+                font: "Sans 72".into(),
+                ..Style::default()
+            },
+            "M".into(),
+            1,
+        )
+        .unwrap();
+        let striped = Hud::new(scanline_style(0.6), "M".into(), 1).unwrap();
+        assert_eq!(bare.pad(), striped.pad());
+    }
+
+    #[test]
+    fn a_zero_strength_raster_is_no_raster_at_all() {
+        // How a preset takes back scanlines inherited from [style.default].
+        let hud = Hud::new(scanline_style(0.0), "M".into(), 1).unwrap();
+        assert!(hud.scanlines.is_none());
+    }
+
     #[test]
     fn a_zero_radius_glow_is_no_glow_at_all() {
         // Zero radius disables inherited glow.
@@ -1667,7 +1861,7 @@ mod tests {
             gtk::cairo::ImageSurface::create(gtk::cairo::Format::A8, w, h).expect("surface");
         {
             let cr = gtk::cairo::Context::new(&surface).expect("context");
-            draw(&cr, hud, layout, None, phase, false);
+            draw(&cr, hud, layout, None, None, phase, false);
         }
         surface.flush();
         let stride = surface.stride() as usize;

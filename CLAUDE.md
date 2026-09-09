@@ -66,5 +66,9 @@ the staged tree. Keep `--locked` and `-D warnings` in build and lint commands.
   below bottom-anchored Sans 48 text at margin=0.
 - Trim trailing newlines on both input paths; Pango adds an empty line,
   shifting centred text by half a line and parking the caret below it.
+- Build the scanline mask in device pixels, once per output, and apply it
+  outside every transform: it is a property of the screen, so it must cut the
+  glow too and must not squash with a collapse. In logical pixels the gaps
+  land on half-pixels at scale=2 and beat into moire.
 - Bound outline width and glow radius by `MAX_EDGE_PX` (128); excessive
   padding reduces wrapping width until every word breaks onto a new line.

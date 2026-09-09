@@ -134,6 +134,49 @@ Peak opacity of the halo where it leaves the glyph.
 .IP
 The halo is painted behind the outline.
 .TP
+.B scanlines
+.RI ( table ,
+default: absent)
+.br
+Dimmed horizontal bands cut through the message:
+.BR "{ period = " \fIF\fR ", strength = " \fIF\fR ", duty = " \fIF\fR " }" .
+Absent by default; a preset can inherit one from [style.default].
+.RS
+.TP
+.B period
+(float, 2\(en128
+.IR "device pixels" ;
+default
+.BR 4.0 )
+Distance between band centres. Unlike every other length here this is in
+device pixels, not logical ones: the raster is a property of the screen, so it
+keeps its pitch whatever the font size or the output scale.
+.TP
+.B strength
+(float, 0\(en1; default
+.BR 0.35 )
+How far a band dims what is under it.
+.B 0
+is off \- which is how a preset takes back a raster inherited from
+.BR [style.default] ,
+TOML having no null, the same reason
+.B outline
+needs the literal
+.BR \(dqnone\(dq .
+.TP
+.B duty
+(float, 0 to below 1; default
+.BR 0.5 )
+Fraction of each period the band covers.
+.B 1
+would erase the message, so it is refused.
+.RE
+.IP
+The bands are applied over the finished message, so they cut the halo as well
+as the glyphs. They are painted inside the existing padding and, unlike
+.BR glow.radius ,
+do not widen it.
+.TP
 .B line_align
 .RB ( left " | " center " | " right ,
 default
