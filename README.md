@@ -15,6 +15,7 @@ wayhud "SYSTEM ONLINE"
 wayhud -o all -t 10 --position top "BUILD FAILED"
 wayhud --vanish 'untype,ms=900' "THIS MESSAGE WILL SELF DESTRUCT"
 journalctl -n 3 -u nginx | wayhud --reveal instant --color '#fb4934'
+wayhud --scanlines '4,strength=0.5' --glow '#33ff33' --color '#33ff33' "ONLINE"
 ```
 
 ## Install
@@ -203,7 +204,7 @@ for all keys, defaults and ranges.
 | `outline`       | CSS colour              | `"#1d2021"`                | Stroke colour; `"none"` disables it                   |
 | `outline_width` | float, 0–128 logical px | font size / 14             | Stroke width; unset it scales with the font           |
 | `glow`          | table                   | —                          | Halo behind the glyphs; `radius = 0` disables it      |
-| `scanlines`     | table                   | —                          | Raster bands over the message; `strength = 0` disables|
+| `scanlines`     | table                   | —                          | Raster bands; `strength = 0` disables them            |
 | `halign`        | `left` `center` `right` | `center`                   | Horizontal placement on the output                    |
 | `valign`        | `top` `center` `bottom` | `center`                   | Vertical placement                                    |
 | `margin`        | int, logical px         | `64`                       | Gap from the anchored edge to the surface             |

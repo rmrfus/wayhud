@@ -71,7 +71,7 @@ struct Cli {
     glow: Option<String>,
 
     /// Scanline period in device pixels, or "none". Takes strength=0..1 and
-    /// duty=0..1. E.g. "4,strength=0.35".
+    /// duty=0..<1. E.g. "4,strength=0.35".
     #[arg(long)]
     scanlines: Option<String>,
 

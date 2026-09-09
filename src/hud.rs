@@ -1388,6 +1388,75 @@ mod tests {
         );
     }
 
+    /// Number of separate dimmed bands crossing the ink when the message is
+    /// rendered at `scale`, counted in device rows.
+    fn bands_at_scale(hud: &Hud, layout: &pango::Layout, scale: f64) -> usize {
+        let pad = hud.pad();
+        let (tw, th) = layout.pixel_size();
+        let w = ((f64::from(tw) + pad.x * 2.0) * scale).ceil() as i32;
+        let h = ((f64::from(th) + pad.y * 2.0) * scale).ceil() as i32;
+        let mask = scanline_mask(w, h, hud.scanlines.as_ref().expect("scanlines")).expect("mask");
+        let mut surface =
+            gtk::cairo::ImageSurface::create(gtk::cairo::Format::A8, w, h).expect("surface");
+        {
+            let cr = gtk::cairo::Context::new(&surface).expect("context");
+            cr.scale(scale, scale);
+            draw(
+                &cr,
+                hud,
+                layout,
+                None,
+                Some((&mask, scale)),
+                Phase::Hold,
+                false,
+            );
+        }
+        surface.flush();
+        let stride = surface.stride() as usize;
+        let data = surface.data().expect("pixels");
+        let sums: Vec<u32> = (0..h as usize)
+            .map(|y| {
+                (0..w as usize)
+                    .map(|x| u32::from(data[y * stride + x]))
+                    .sum()
+            })
+            .collect();
+        let peak = *sums.iter().max().expect("rows");
+        // Only where the glyphs actually are: the padding carries no ink, and
+        // the top and bottom edges of a letter thin out on their own.
+        let lit: Vec<usize> = (0..sums.len()).filter(|&y| sums[y] > peak / 2).collect();
+        let (first, last) = (lit[lit.len() / 5], lit[lit.len() * 4 / 5]);
+        let mut bands = 0;
+        let mut inside = false;
+        for &sum in sums.iter().take(last + 1).skip(first) {
+            let dim = sum < peak * 9 / 10;
+            if dim && !inside {
+                bands += 1;
+            }
+            inside = dim;
+        }
+        bands
+    }
+
+    #[test]
+    fn the_raster_keeps_its_pitch_in_device_pixels_at_any_scale() {
+        // The one length here that is not logical. Twice the scale is twice the
+        // device pixels over the same message, so it must be twice the bands.
+        // A period read as logical would count the same at both and draw at
+        // half the pitch on a HiDPI output, which is the bug this pins.
+        let hud = Hud::new(scanline_style(0.8), "MMMM".into(), 1).unwrap();
+        let layout = bare_layout(&hud.text, &hud.style.font);
+        let one = bands_at_scale(&hud, &layout, 1.0);
+        let two = bands_at_scale(&hud, &layout, 2.0);
+        assert!(one > 4, "too few bands to compare: {one}");
+        // Within one band: the ink window is measured, not derived.
+        assert!(
+            two.abs_diff(one * 2) <= 1,
+            "scale 1 gave {one} bands, scale 2 gave {two}; expected about {}",
+            one * 2
+        );
+    }
+
     #[test]
     fn scanlines_do_not_change_the_surface_size() {
         // The raster is painted inside the padding, so unlike the glow it must
