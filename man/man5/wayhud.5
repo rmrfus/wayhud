@@ -16,31 +16,21 @@ whose sub\-tables are named presets; a preset is chosen at run time with
 and defaults to
 .BR default .
 .PP
-A missing file is not an error \- every preset then consists entirely of the
-built\-in defaults listed below. A file that fails to parse
-.I is
-an error, as is a key the program does not recognise: a misspelt setting is
-reported rather than silently ignored.
+A missing file uses built-in defaults. Malformed files, unknown keys and
+unknown preset names are errors.
 .PP
 .B [style.default]
 is the base for every other preset. A key a preset does not set is taken from
-there, and only then from the built\-in default listed below; so the shared
-font and colours are written once rather than copied into every block.
+there, then from the built\-in default listed below.
 .PP
 Sub\-tables
 .RB ( reveal ,
 .BR vanish ,
 .BR sound )
-merge key by key, so a preset can change one knob and keep the rest of the
-base's. The exception is a
+merge key by key. A
 .B kind
-that differs from the base's: that replaces the sub\-table outright, because
-the remaining keys would belong to the other variant.
-.PP
-A key set in
-.B [style.default]
-therefore applies everywhere unless a preset overrides it \- including back to
-a different value.
+that differs from the base replaces the sub\-table, discarding fields from
+the previous variant.
 .PP
 Command\-line flags override the selected preset for that invocation; see
 .BR wayhud (1).
@@ -60,22 +50,14 @@ points, e.g.
 .B "\(dqMonospace 72\(dq"
 or
 .BR "\(dqFiraCode Nerd Font 72\(dq" .
-Note that the message itself is plain text: Pango markup in it is not
-interpreted.
+Messages are plain text; Pango markup is not interpreted.
 .IP
 .BR Monospace ,
 .B Sans
 and
 .B Serif
-are fontconfig generics: they resolve to whatever the system has configured
-for that role, so they work on any machine. A real family name must be spelled
-the way fontconfig spells it, which is rarely how the vendor writes it \-
-.B "\(dqFiraCode Nerd Font\(dq"
-resolves,
-.B "\(dqFira Code\(dq"
-does not. A name that does not resolve falls back to the system default
-without a word of warning, which for a HUD usually means a proportional face
-where a fixed\-width one was meant. Check one with
+are fontconfig generics. Unavailable named families fall back to the system
+font silently. Check a family with
 .BR fc\-match (1).
 .TP
 .I pixels
@@ -93,9 +75,7 @@ table.
 default
 .BR "\(dqMonospace 72\(dq" )
 .br
-Typeface and size of the message. The default is the fontconfig generic
-rather than a named family, so an unconfigured install renders in the
-system's monospaced font instead of silently falling back.
+Typeface and size. The default uses the system's monospace font.
 .TP
 .B color
 .RI ( colour ,
@@ -109,27 +89,17 @@ Fill colour of the glyphs.
 default
 .BR \(dq#1d2021\(dq )
 .br
-Colour of the stroke around each glyph. Omit the key, or set it to
-.BR \(dqnone\(dq ,
-to draw the text flat with no outline pass. A preset inheriting an outline
-from
-.B [style.default]
-needs the explicit
+Stroke colour. Set to
 .B \(dqnone\(dq
-\- TOML has no null to remove an inherited key with.
+to disable the outline, including one inherited from
+.BR [style.default] .
 .TP
 .B outline_width
 .RI ( float ,
 .IR pixels ;
 default: derived from the font size)
 .br
-Width of that stroke. Left unset it is the font size divided by 14, which
-keeps the visible halo a fixed fraction of the stem thickness across sizes;
-a constant that looks like a fine contour at 72pt reads as fake bold at
-24pt. Set it to pin an exact width, 0 to 128 \- the same ceiling as
-.BR glow.radius ,
-because both are added to the padding and the padding is subtracted from the
-monitor width that decides where lines wrap.
+Stroke width, from 0 to 128 logical pixels. Defaults to font size / 14.
 .TP
 .B glow
 .RI ( table ,
@@ -137,32 +107,24 @@ default: absent)
 .br
 A soft halo behind the glyphs:
 .BR "{ color = " \fICOLOUR\fR ", radius = " \fIF\fR ", alpha = " \fIF\fR " }" .
-Omit the key for no halo.
+Absent by default; presets can inherit it from [style.default].
 .RS
 .TP
 .B color
 .RI ( colour ,
 default
 .BR \(dq#b8bb26\(dq )
-The halo's colour. Matching the fill reads as the glyph emitting light, which
-is the point; a contrasting one reads as a printing error.
+The halo's colour.
 .TP
 .B radius
 (float, 0\(en128
 .IR pixels ;
 default
 .BR 12.0 )
-How far the halo carries, in logical pixels \- the light is gone by that
-distance from the glyph, not merely faint.
+Maximum halo reach in logical pixels. Set to
 .B 0
-is off \- which is how a preset takes back a halo inherited from
-.BR [style.default] ,
-TOML having no null, the same reason
-.B outline
-needs the literal
-.BR \(dqnone\(dq .
-The range is enforced because this figure widens the padding, and the padding
-is subtracted from the monitor width to get the wrapping budget.
+to disable inherited glow. Increasing the radius adds padding and reduces
+the available wrapping width.
 .TP
 .B alpha
 (float, 0\(en1; default
@@ -170,10 +132,7 @@ is subtracted from the monitor width to get the wrapping budget.
 Peak opacity of the halo where it leaves the glyph.
 .RE
 .IP
-The halo is painted
-.I under
-the outline rather than instead of it, so the two combine. It is blurred once
-per output when the message is built, not per frame.
+The halo is painted behind the outline.
 .TP
 .B line_align
 .RB ( left " | " center " | " right ,
@@ -189,15 +148,7 @@ independent of where the block itself sits.
 default
 .BR center )
 .br
-Horizontal placement of the text block on the output. The names are physical
-edges, not the
-.BR start / end
-of CSS and GTK: the surface is anchored to a real edge of the monitor, so
-.B left
-stays the left edge whatever the text direction. Each axis takes only its own
-names \-
-.B "halign = \(dqtop\(dq"
-is an error, not a puzzle.
+Horizontal placement using physical edges, independent of text direction.
 .TP
 .B valign
 .RB ( top " | " center " | " bottom ,
@@ -212,22 +163,11 @@ Vertical placement.
 default
 .BR 64 )
 .br
-Gap between the SURFACE and the edge it is anchored to \- not between the text
-and that edge. The surface carries transparent padding for the outline, the
-halo and the caret, so the text sits that much further in again, and the
-visible distance is this value plus that padding.
+Gap from the anchored screen edge to the surface. Visible text is inset
+further by padding for the outline, glow and caret. Padding grows with font
+size and glow radius; caret width adds horizontal padding only.
 .IP
-The padding differs by axis and is not a constant: it grows with
-.BR glow.radius ,
-with the font size, and horizontally with the caret. So raising
-.B glow.radius
-moves an anchored message away from its edge without
-.B margin
-having been touched.
-.IP
-An axis set to
-.B center
-is centred by the compositor and ignores this value entirely.
+Centred axes ignore this value.
 .SS Timing
 .TP
 .B timeout_ms
@@ -235,18 +175,8 @@ is centred by the compositor and ignores this value entirely.
 milliseconds; default
 .BR 5000 )
 .br
-How long the fully revealed text stays up. Measured from the
-.I end
-of the reveal, not from start\-up, so a slow typewriter does not eat into
-the reading time.
-.IP
-The whole lifetime \- reveal plus hold plus vanish \- is capped at 3600000 ms
-(one hour), and the message is refused if it would exceed that: there is no
-way to dismiss a HUD early, so an accidental extra digit, a tiny
-.B cps
-or a huge vanish
-.B ms
-would all strand it on screen.
+Hold time after reveal. The total reveal, hold and vanish duration must not
+exceed 3600000 ms (one hour). Overlays cannot be dismissed early.
 .TP
 .B reveal
 .RI ( table ,
@@ -276,28 +206,21 @@ The typewriter blip. See
 .B SOUND
 below.
 .SH THE COMMAND LINE
-Every key here has a flag, and the two use the same names. A flag that stands
-for a table takes an optional bare value followed by comma\-separated
-.IR key = value
-pairs, with the keys spelled as they are spelled in this page:
+CLI flags override individual fields in the selected preset. For example:
 .B \-\-glow \(aq#b8bb26,radius=12\(aq
-sets what
-.B glow = { color = \(dq#b8bb26\(dq, radius = 12 }
-sets. A field the flag does not mention keeps the preset's value, and an
-unknown one is refused with the list of the ones that exist \- the same answer
-.B deny_unknown_fields
-gives a typo in this file.
+sets glow colour and radius, preserving the preset's alpha.
 .PP
-The ranges stated here are checked once, by the same code, whichever way the
-value arrived. The one difference in units is the hold:
-.B timeout_ms
-is milliseconds, while
+CLI values use the same ranges as config values.
 .B \-\-timeout
-is seconds.
-.PP
+uses seconds;
+.B timeout_ms
+uses milliseconds. The CLI's
+.B \-\-outline width=
+sets
+.BR outline_width .
 See
 .BR wayhud (1)
-for the flags themselves.
+for all flags.
 .SH REVEAL
 A table with a
 .B kind
@@ -320,40 +243,18 @@ typewriter the kind must say
 blinking while the text is held.
 .TP
 .B jitter
-(float, 0\(en1; default 0) Randomise each gap between keystrokes by up to
-this fraction of it, either way: 0 is a metronome, 0.3 varies every gap by up
-to 30%. The variation is symmetric, so the reveal still takes about
-.I chars
-/
-.I cps
-seconds overall. Values above 1 are rejected, since a gap would have to be
-negative.
-.IP
-The blips follow the same moments as the glyphs \- they are the same numbers,
-not a second calculation \- so sound and animation cannot drift apart.
+(float, 0\(en1; default 0) Vary each keystroke interval by up to this fraction
+in either direction. For example, 0.3 gives up to 30% variation. Audio and
+animation use the same timings.
 .TP
 .B scroll
-(boolean, default false) Which of the typewriter's two fills to use. At the
-default the block is filled downwards from its top edge: it is sized for the
-finished message up front, so the write head starts at the top and walks down
-through the room reserved for the rest. Set true it is terminal mode \- the
-write head stays on the LAST line of the block, and reaching a newline lifts
-everything already written by one line.
+(boolean, default false) Keep the current line at the bottom of the block
+and scroll earlier lines up. When false, fill from the top.
 .IP
-Nothing else differs between the two. The surface is sized from the finished
-message and placed before the first character is drawn either way, so this
-moves the text inside the box and never the box itself, which is why it holds
-under any
-.BR valign :
-with
-.B valign = "bottom"
-the writing sits on the bottom margin throughout. A message with no newlines
-draws identically either way.
-.IP
-An
-.B untype
-vanish runs the terminal rule backwards, since the offset follows the write
-head and not the clock: the block slides back down as the lines are eaten.
+The surface remains fixed at the full message size in both modes. This works
+at any position; single-line messages render identically. During
+.BR untype ,
+the scroll reverses as lines are erased.
 .RE
 .SH VANISH
 A table with a
@@ -383,29 +284,27 @@ of
 .BR up .
 .TP
 .B untype
-The caret walks back and eats the text. The only vanish that makes a sound,
-because it is typing; it gets a caret even when the reveal was instant.
+Erase characters in reverse order with sound and a caret, including after
+an instant reveal.
 .TP
 .B dissolve
-The glyphs fall apart into blocks, in an order that is pseudo\-random but
-fixed, so the decay is stable rather than flickering.
+Disappear in blocks with fixed pseudo\-random lifetimes.
 .SH SOUND
-The blip is synthesised at run time rather than loaded from a file. The knob
-names match
-.BR blyamk (1),
-so a sound dialled in there with
+Blips are synthesised at run time. Parameter names match
+.BR blyamk (1);
+values from
 .B blyamk \-v
-transfers over verbatim.
+can be copied into this table.
 .TP
 .B enabled
 (boolean, default
 .BR true )
 .br
-Whether to make any noise at all.
+Enable blips.
 .B \-\-sound off
 overrides this to false, and
 .B \-\-sound on
-back to true, without touching the knobs below.
+back to true, preserving the other parameters.
 .TP
 .B freq
 (float, 100\(en8000 Hz; default
@@ -417,15 +316,14 @@ Base frequency of the blip \- its overall pitch.
 (float, 10\(en3000 milliseconds; default
 .BR 38.0 )
 .br
-Ring\-out time. Longer values turn a click into a tone. The range is
-enforced because this figure sizes the synthesis buffer.
+Decay time of the blip.
 .TP
 .B gain
 (float, 0\(en1; default
 .BR 0.22 )
 .br
-Peak amplitude of a single blip. Overlapping blips sum, and the mix is
-clamped rather than limited, so a high gain at a high
+Peak amplitude of a single blip. Overlapping blips sum and are clamped to
+full scale. High gain at high
 .B cps
 will clip.
 .TP
@@ -433,21 +331,20 @@ will clip.
 (integer, at least 1; default
 .BR 1 )
 .br
-Blip once every N revealed characters. Whitespace never blips \- a space bar
-on a movie terminal does not click, and newlines would stutter.
+Blip once every N revealed characters. Whitespace is silent.
 .SH EXAMPLE
 Only
 .B [style.default]
 spells out the common settings; the others state their differences.
 .PP
-A complete file with every key at its default is shipped as
+More presets and optional settings are shipped in
 .I config.example.toml
 in the source distribution.
 .PP
 .RS
 .nf
 [style.default]
-font = "FiraCode Nerd Font 72"   # a real family; must match fontconfig
+font = "FiraCode Nerd Font 72"   # check with fc-match
 color = "#b8bb26"
 outline = "#1d2021"
 halign = "center"
@@ -462,14 +359,13 @@ color = "#fb4934"
 timeout_ms = 8000
 vanish = { kind = "wash", ms = 300, dir = "up" }
 
-# Self\-destructing note: types in, sits, clicks its way back out.
+# Typewriter reveal and reverse erase.
 [style.spy]
 color = "#8ec07c"
 reveal = { kind = "typewriter", cps = 18, cursor = true }
 vanish = { kind = "untype", ms = 900 }
 
-# A terminal in the corner: each line arrives on the bottom row and pushes
-# what came before it up.
+# Scroll from the bottom-left corner.
 [style.boot]
 font = "Monospace 28"
 halign = "left"
@@ -478,7 +374,7 @@ margin = 32
 reveal = { kind = "typewriter", cps = 40, cursor = true, scroll = true }
 vanish = { kind = "fade", ms = 300 }
 
-# Small, cornered, silent \- for something that just needs to be on screen.
+# Small, silent corner overlay.
 [style.corner]
 font = "Monospace 24"
 halign = "right"

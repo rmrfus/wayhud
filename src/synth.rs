@@ -1,13 +1,8 @@
-//! Blip synthesis, lifted from `blyamk` (same author, same knobs).
-//!
-//! Everything here is a pure function of `Params`: no I/O, no globals. wayhud
-//! only needs one short tick, but it needs it rendered as floats so the
-//! typewriter track can mix many of them at sub-sample-accurate offsets.
+//! Blip synthesis from `blyamk`, rendered as float samples for track mixing.
 
 use std::f64::consts::PI;
 
-/// Synthesis parameters. Ranges are checked by `Style::validate` before this
-/// is built — `decay_ms` in particular sizes the sample buffer.
+/// Synthesis parameters, validated by `Style::validate` before allocation.
 #[derive(Debug, Clone)]
 pub struct Params {
     pub freq: f64,       // base frequency, Hz
@@ -26,11 +21,8 @@ pub struct Partial {
     pub weight: f64,
 }
 
-/// Cluster + octave calibration measured from a real bell sample in blyamk.
-/// The cluster ratios are relative to the base freq; weights are the measured
-/// full-signal amplitudes. Note the loudest partial is the *bottom* of the cluster (the
-/// bell "hum"), not the base — the base is only the reference the octave
-/// overtone doubles.
+/// Cluster ratios and weights measured from a bell sample in blyamk.
+/// Ratios are relative to the base frequency; the octave is twice the base.
 const CLUSTER: [(f64, f64); 4] = [
     (0.00, 0.70), // base, ratio 1.0   (1000 Hz) — octave fundamental
     (1.00, 0.63), // 1 - 1*d           (925 Hz)
@@ -38,9 +30,7 @@ const CLUSTER: [(f64, f64); 4] = [
     (2.33, 1.00), // 1 - 2.33*d        (825 Hz) — the dominant partial
 ];
 
-/// Expand the knobs into the actual partials, dropping anything that would
-/// alias or contribute nothing. The weight-sum / peak normalization downstream
-/// runs over exactly the partials kept here.
+/// Resolve partials and discard inaudible or aliasing frequencies.
 pub fn partials(p: &Params) -> Vec<Partial> {
     let nyquist = p.rate as f64 / 2.0;
     let mut out = Vec::with_capacity(CLUSTER.len() + 1);
@@ -59,15 +49,12 @@ pub fn partials(p: &Params) -> Vec<Partial> {
         weight: p.brightness,
     });
 
-    // Safety: keep only audible, non-aliasing, contributing partials. Extreme
-    // detune/freq/rate combos (e.g. -f 8000 --rate 8000) can cull all of them;
-    // the caller must tolerate an empty cluster (renders as silence).
+    // The caller must accept an empty cluster as silence.
     out.retain(|part| part.freq > 0.0 && part.freq < nyquist && part.weight > 0.0);
     out
 }
 
-/// Envelope + timing, all derived from attack/decay. `fade` is defined off the
-/// body first so there is no self-reference.
+/// Envelope timing derived from attack and decay.
 struct Envelope {
     attack: f64, // s
     tau: f64,    // s, exp decay time-constant (internal)
@@ -81,10 +68,11 @@ impl Envelope {
         let attack = p.attack_ms / 1000.0;
         let decay = p.decay_ms / 1000.0;
         let body = attack + decay;
-        let fade = (0.005_f64).min(body / 4.0); // 5 ms, or body/4 for tiny blips
+        let fade = (0.005_f64).min(body / 4.0); // Up to 5 ms
         let total = body + fade;
 
-        // decay knob = ms to -60 dB => exp(-decay/tau) = 1/1000 => tau = decay/ln(1000)
+        // decay_ms = time to -60 dB => exp(-decay/tau) = 1/1000 => tau =
+        // decay/ln(1000)
         let tau = decay / 1000.0_f64.ln();
 
         let total_n = (total * rate).round() as usize;
@@ -115,9 +103,8 @@ impl Envelope {
             1.0
         };
 
-        // Linear fade over the last `fade_n` samples, hitting exactly 0 at the
-        // final index (i == total_n - 1). Denominator uses fade_n-1 so the ramp
-        // is a clean 1 -> 0 with no residual step; guarded against fade_n == 1.
+        // Fade to zero at the final sample; handle a one-sample fade
+        // separately.
         let n = self.total_n;
         let fade_out = if i + self.fade_n >= n {
             let denom = (self.fade_n - 1).max(1) as f64;
@@ -130,9 +117,7 @@ impl Envelope {
     }
 }
 
-/// Render to normalized float samples in [-1, 1], peak-normalized to `gain`.
-/// Split out from `render` so tests can assert finiteness / peak before the
-/// i16 quantization hides NaNs (NaN as i16 silently becomes 0).
+/// Render float samples with peak amplitude `gain` before i16 quantisation.
 pub fn render_f64(p: &Params) -> Vec<f64> {
     let parts = partials(p);
     let env = Envelope::new(p);
@@ -157,8 +142,7 @@ pub fn render_f64(p: &Params) -> Vec<f64> {
         }
     }
 
-    // Second pass: normalize by the measured peak so `gain` IS the peak
-    // amplitude. Guard the all-culled/silent case (peak == 0) against 0/0.
+    // Normalise to `gain`; skip division for silence.
     let scale = if peak > 0.0 { p.gain / peak } else { 0.0 };
     for v in &mut raw {
         *v = (*v * scale).clamp(-1.0, 1.0);

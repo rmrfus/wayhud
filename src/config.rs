@@ -1,18 +1,5 @@
-//! Config file + the resolved style a single HUD invocation renders with.
-//!
-//! Layout on disk is a flat map of named presets:
-//!
-//! ```toml
-//! [style.default]
-//! font = "Monospace 72"
-//! [style.alert]
-//! color = "#ff3355"
-//! ```
-//!
-//! `[style.default]` is the base for every other preset: a key the preset does
-//! not set is taken from there, and only then from the compiled-in default.
-//! Anything else makes a section named "default" a lie, and forces the shared
-//! font to be copy-pasted into every preset in the file.
+//! TOML presets and resolved styles. Values inherit from `[style.default]`,
+//! then from built-in defaults.
 
 use std::collections::HashMap;
 use std::ffi::OsString;
@@ -21,38 +8,19 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use serde::Deserialize;
 
-/// One hour. Long enough for anything a heads-up message is for, short enough
-/// that a typo cannot strand the overlay on screen — there is no way to
-/// dismiss one early.
-///
-/// Bounds the WHOLE lifetime (reveal + hold + vanish), not just the hold:
-/// `--reveal 'cps=0.01'` or `--vanish 'fade,ms=99999999999999'` strand the
-/// overlay exactly as well as a huge `--timeout` does.
+/// Maximum total lifetime: reveal + hold + vanish. Overlays cannot be dismissed
+/// early.
 pub const MAX_LIFETIME_MS: u64 = 3_600_000;
 
-/// Longest message we will render, in characters. Everything downstream
-/// scales with the text — the step table, the blip onsets, the shaped pango
-/// layout — so an unbounded pipe is an OOM before the first frame, while the
-/// lifetime cap above only fires after those allocations. A HUD is not a
-/// pager: anything past this is a mistake, not a message.
+/// Character limit checked before allocating layouts, steps and audio onsets.
 pub const MAX_TEXT_CHARS: usize = 100_000;
 
-/// Ceiling on anything that widens the padding — the outline stroke and the
-/// glow radius.
-///
-/// The padding is subtracted from the monitor width to get the wrapping
-/// budget, so an unbounded value there does not merely look wrong: it starves
-/// the text until every line breaks after one word, and the glow additionally
-/// sizes a device-resolution mask surface from it.
+/// Maximum outline width and glow radius in logical pixels. These increase
+/// padding, reducing the wrapping width and enlarging the glow mask.
 pub const MAX_EDGE_PX: f64 = 128.0;
 
-/// Where a block of text sits horizontally. Maps onto layer-shell anchors:
-/// `Center` means "anchor neither edge", which the compositor centres for us.
-///
-/// Physical names, not the `start`/`end` of CSS and GTK: those are relative to
-/// the writing direction, and this is not — `Left` is `Edge::Left` in an RTL
-/// locale too. It also keeps one vocabulary across `--position`, `halign` and
-/// `line_align` instead of three.
+/// Physical horizontal placement, independent of writing direction.
+/// `Center` leaves both layer-shell edges unanchored.
 #[derive(Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum HAlign {
@@ -61,8 +29,7 @@ pub enum HAlign {
     Right,
 }
 
-/// Where a block of text sits vertically. A separate type from [`HAlign`] so
-/// `halign = "top"` is a config error rather than something to puzzle out.
+/// Vertical placement; separate from [`HAlign`] to reject invalid axis values.
 #[derive(Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum VAlign {
@@ -94,21 +61,12 @@ pub enum Reveal {
         /// Draw a block cursor at the write head.
         #[serde(default = "d_cursor")]
         cursor: bool,
-        /// Randomise each gap by up to +/- this fraction of it. 0 is a
-        /// metronome; 0.3 varies every gap by up to 30% either way. Clamped
-        /// to 1.0, past which a gap would want to be negative.
+        /// Vary each keystroke gap by up to this fraction. Range: 0–1.
         #[serde(default)]
         jitter: f64,
-        /// Which of the typewriter's two fills to use. False is the one this
-        /// has always had: the block is sized for the finished message up
-        /// front and filled downwards from its top edge. True is terminal
-        /// mode — the line being written stays on the LAST line of the block,
-        /// and a newline lifts everything above it.
-        ///
-        /// A field rather than a `Reveal` variant of its own because nothing
-        /// else about the reveal changes: same cps, same jitter, same caret,
-        /// same timeline. A variant would have duplicated all four and put a
-        /// second arm on every match that reads them.
+        /// Keep the current line at the bottom of the block and scroll earlier
+        /// lines up. When false, fill from the top. The surface size is fixed
+        /// in both modes.
         #[serde(default)]
         scroll: bool,
     },
@@ -145,7 +103,7 @@ pub enum Vanish {
         #[serde(default = "d_dir")]
         dir: Dir,
     },
-    /// Backspace it out: the caret walks back and eats the text, blipping.
+    /// Erase characters in reverse order, with a caret and blips.
     Untype {
         #[serde(default = "d_vanish_ms")]
         ms: u64,
@@ -169,9 +127,7 @@ impl Vanish {
         }
     }
 
-    /// The name this variant answers to, in the config file and on the command
-    /// line alike — one spelling, so `--vanish 'ms=250'` can keep the preset's
-    /// effect without a second table of variants to fall out of step.
+    /// Effect name used by TOML and CLI specs.
     pub fn kind(&self) -> &'static str {
         match self {
             Vanish::Instant => "instant",
@@ -183,29 +139,18 @@ impl Vanish {
         }
     }
 
-    /// Untype reveals in reverse, so it drives the caret and the blip track
-    /// rather than being a pure paint effect like the others.
+    /// Whether the effect drives the visible character count and audio.
     pub fn is_untype(&self) -> bool {
         matches!(self, Vanish::Untype { .. })
     }
 }
 
-/// A soft halo painted behind the glyphs.
-///
-/// Not an alternative to `outline` but a pass in front of it: the two are
-/// drawn in sequence, so a dark contour with a coloured bloom outside it is
-/// one setting away rather than a variant to choose between. A tagged enum
-/// here would have cost a config break to buy less.
-///
-/// `radius = 0` is off, which is how a preset takes back a glow inherited
-/// from `[style.default]` — TOML has no null, the same reason `outline` needs
-/// the literal `"none"`.
+/// Halo behind the glyphs and outline. `radius = 0` disables inherited glow.
 #[derive(Deserialize, Clone, Debug)]
 #[serde(default, deny_unknown_fields)]
 pub struct Glow {
     pub color: String,
-    /// Blur radius in logical pixels. Feeds the padding, and through it the
-    /// wrapping budget, so it is bounded rather than free.
+    /// Blur radius in logical pixels; increases padding.
     pub radius: f64,
     /// Peak opacity of the halo where it leaves the glyph.
     pub alpha: f64,
@@ -214,9 +159,6 @@ pub struct Glow {
 impl Default for Glow {
     fn default() -> Self {
         Glow {
-            // Same green as the fill: a halo in the glyph's own colour reads as
-            // the glyph emitting light, which is the whole point. A contrasting
-            // one reads as a printing error.
             color: "#b8bb26".to_string(),
             radius: 12.0,
             alpha: 0.55,
@@ -224,8 +166,7 @@ impl Default for Glow {
     }
 }
 
-/// Typewriter blip. Knob names match `blyamk`, so a sound dialled in there
-/// with `blyamk -v` transfers over verbatim.
+/// Typewriter audio parameters, named to match `blyamk`.
 #[derive(Deserialize, Clone, Debug)]
 #[serde(default, deny_unknown_fields)]
 pub struct Sound {
@@ -253,25 +194,22 @@ impl Default for Sound {
 #[derive(Deserialize, Clone, Debug)]
 #[serde(default, deny_unknown_fields)]
 pub struct Style {
-    /// Pango font description. The default names the fontconfig generic
-    /// `Monospace`, which resolves on any box that has fonts at all; a real
-    /// family has to match fontconfig exactly, or it falls back to something
-    /// else without a word of warning.
+    /// Pango font description. Named families must match fontconfig;
+    /// unavailable families fall back to the system font.
     pub font: String,
     pub color: String,
-    /// `None` (absent in TOML) means no outline pass at all.
+    /// Resolved outline colour; `None` disables the stroke.
     pub outline: Option<String>,
-    /// Stroke width in logical pixels. Left unset it scales with the font
-    /// size, which is almost always what you want — see `Hud::outline_width`.
+    /// Stroke width in logical pixels; defaults to font size / 14.
     pub outline_width: Option<f64>,
     pub halign: HAlign,
     pub valign: VAlign,
     /// Gap from the anchored edge, in logical px. Ignored on a centred axis.
     pub margin: i32,
     pub line_align: LineAlign,
-    /// `None` (absent in TOML) means no glow pass at all.
+    /// Resolved glow settings; `None` disables glow.
     pub glow: Option<Glow>,
-    /// Hold time AFTER the reveal finishes — not the total lifetime.
+    /// Hold time after the reveal finishes.
     pub timeout_ms: u64,
     pub reveal: Reveal,
     pub vanish: Vanish,
@@ -281,8 +219,6 @@ pub struct Style {
 impl Default for Style {
     fn default() -> Self {
         Style {
-            // A generic, not a family: a HUD that renders in the wrong font
-            // on every machine but the author's is not a default.
             font: "Monospace 72".to_string(),
             color: "#b8bb26".to_string(),         // gruvbox bright green
             outline: Some("#1d2021".to_string()), // gruvbox bg0_hard
@@ -306,14 +242,7 @@ impl Default for Style {
 }
 
 impl Style {
-    /// Range checks that serde cannot express. Runs on the preset actually
-    /// selected, so an unused broken preset elsewhere in the file is not a
-    /// reason to refuse to show a message.
-    ///
-    /// Public because the command line has to be held to the same ranges. It
-    /// used to state them again in the flag parsers, which is two lists to
-    /// keep in step and one of them silently authoritative: whichever ran
-    /// last.
+    /// Validate ranges after resolving the selected preset and CLI overrides.
     pub fn validate(&self) -> Result<()> {
         anyhow::ensure!(
             self.timeout_ms <= MAX_LIFETIME_MS,
@@ -321,10 +250,6 @@ impl Style {
             self.timeout_ms
         );
         if let Some(w) = self.outline_width {
-            // Same ceiling as glow.radius, for the same reason: both are added
-            // to the padding, and the padding comes out of the monitor width
-            // that decides where lines wrap. Unbounded, either one starves the
-            // text until every line breaks after a single word.
             anyhow::ensure!(
                 (0.0..=MAX_EDGE_PX).contains(&w),
                 "outline_width must be between 0 and {MAX_EDGE_PX}, got {w}"
@@ -335,18 +260,11 @@ impl Style {
                 (0.0..=1.0).contains(&jitter),
                 "reveal.jitter must be between 0 and 1, got {jitter}"
             );
-            // NaN passes every comparison below and would make the whole
-            // timeline NaN, closing the window on the first frame.
+            // Reject NaN before comparisons; it would invalidate timeline
+            // arithmetic.
             anyhow::ensure!(cps.is_finite(), "reveal.cps must be a finite number");
-            // Zero is not an instant reveal in disguise: the timeline would
-            // still type instantly, but the Typewriter variant is kept, so the
-            // HUD reserves caret room and blinks through the hold — while
-            // `--reveal instant` builds a real Instant and does neither. For
-            // no typewriter the kind must say so.
-            //
-            // The command line lands here too, so `--reveal 'cps=0'` is
-            // refused in the same words rather than quietly meaning something
-            // else than the config file means by it.
+            // Use `Reveal::Instant` to disable typing; zero cps would retain
+            // caret behaviour.
             anyhow::ensure!(cps > 0.0, "reveal.cps must be positive, got {cps}");
         }
         anyhow::ensure!(
@@ -355,10 +273,6 @@ impl Style {
             self.vanish.ms()
         );
         if let Some(glow) = &self.glow {
-            // The radius is added to the padding, and the padding is subtracted
-            // from the monitor width to get the wrapping budget. Unbounded, it
-            // both sizes a device-resolution mask surface and starves the text
-            // of width until every line wraps after one word.
             anyhow::ensure!(
                 (0.0..=MAX_EDGE_PX).contains(&glow.radius),
                 "glow.radius must be between 0 and {MAX_EDGE_PX}, got {}",
@@ -375,10 +289,7 @@ impl Style {
             "sound.every must be at least 1, got {}",
             self.sound.every
         );
-        // The synth allocates its buffer from decay_ms, so an unchecked value
-        // is an out-of-memory abort before a single sample is mixed: 1e9 asks
-        // for 384 GB. Ranges match blyamk's, which is where these knobs and
-        // their calibration come from.
+        // `decay_ms` sizes the synth buffer. Ranges match blyamk.
         let sound = &self.sound;
         anyhow::ensure!(
             (100.0..=8000.0).contains(&sound.freq),
@@ -405,19 +316,13 @@ const BASE: &str = "default";
 #[derive(Deserialize, Default, Debug)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
-    /// Kept as raw tables so a preset can be merged onto the base before any
-    /// field defaults are filled in; deserialising to `Style` first would make
-    /// "unset" and "set to the compiled default" indistinguishable.
+    /// Merge raw tables before deserialisation to distinguish omitted fields
+    /// from fields explicitly set to their built-in defaults.
     pub style: HashMap<String, toml::Table>,
 }
 
-/// Overlay `over` onto `base`, recursing into sub-tables.
-///
-/// A sub-table is replaced wholesale rather than merged when both sides carry
-/// a `kind` and the two differ: `kind` is the discriminant of a tagged enum,
-/// so leftovers from the other variant would be rejected as unknown fields.
-/// `vanish = { ms = 300 }` over a `collapse` base still merges — no new kind,
-/// nothing to contradict.
+/// Recursively overlay `over` onto `base`. Replace tables with different
+/// `kind` values to avoid retaining fields from another enum variant.
 fn merge_into(base: &mut toml::Table, over: &toml::Table) {
     for (key, value) in over {
         match (base.get_mut(key), value) {
@@ -439,9 +344,8 @@ fn compatible(base: &toml::Table, over: &toml::Table) -> bool {
 }
 
 impl Config {
-    /// Read the config, or hand back an empty one if the file isn't there.
-    /// A malformed file IS an error — silently falling back to defaults on a
-    /// typo means debugging a HUD that ignores half its own settings.
+    /// Read the config. A missing file yields an empty config; malformed files
+    /// fail.
     pub fn load(path: Option<PathBuf>) -> Result<Config> {
         let Some(path) = path.or_else(default_path) else {
             return Ok(Config::default());
@@ -453,14 +357,8 @@ impl Config {
         };
         let config: Config =
             toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
-        // Type-check every preset now, not just the one that ends up selected:
-        // a misspelt key in a preset nobody asked for today is still a typo,
-        // and reporting it at load time is the whole point of
-        // deny_unknown_fields. Range checks stay per-preset — see `style`.
-        //
-        // Check the MERGED table, not the raw one: a preset that inherits its
-        // `kind` from the base has no `kind` of its own, and the tagged enums
-        // would be rejected for a field the merge was about to supply.
+        // Type-check every merged preset, including inherited enum kinds.
+        // Range checks apply only to the selected preset.
         for name in config.style.keys() {
             config
                 .merged(name)
@@ -470,9 +368,7 @@ impl Config {
         Ok(config)
     }
 
-    /// Look up a preset. An unknown name is an error, not a silent default:
-    /// `--style alret` should say so rather than render the wrong thing.
-    /// A preset's keys overlaid on the base's, before defaults are filled in.
+    /// Overlay a preset onto the base before filling field defaults.
     fn merged(&self, name: &str) -> toml::Table {
         let mut merged = self.style.get(BASE).cloned().unwrap_or_default();
         if name != BASE
@@ -483,11 +379,8 @@ impl Config {
         merged
     }
 
-    /// Resolve a preset: its own keys over `[style.default]`'s, over the
-    /// compiled-in defaults.
-    ///
-    /// An unknown name is an error, not a silent fallback: `--style alret`
-    /// should say so rather than quietly render something else.
+    /// Resolve a named preset over `[style.default]` and built-in defaults.
+    /// Unknown names return an error.
     pub fn style(&self, name: &str) -> Result<Style> {
         if name != BASE && !self.style.contains_key(name) {
             anyhow::bail!("no [style.{name}] in the config");
@@ -510,18 +403,8 @@ fn default_path() -> Option<PathBuf> {
     )
 }
 
-/// Where the config lives, given the two variables.
-///
-/// Split out from `default_path` so the rules can be exercised without
-/// mutating the process environment: `set_var` is unsound once a second thread
-/// exists, which is why edition 2024 made it an unsafe fn.
-///
-/// The XDG spec uses `XDG_CONFIG_HOME` only when it holds an ABSOLUTE path,
-/// and that is not pedantry. `XDG_CONFIG_HOME=""` taken at face value becomes
-/// `PathBuf::from("")`, so the lookup turns into `./wayhud/config.toml` —
-/// relative to whatever directory the process happened to start in, with the
-/// real config in $HOME silently ignored. An empty path is not absolute, so
-/// one predicate covers both the empty and the relative case.
+/// Resolve from the supplied XDG and HOME values. Use XDG only if absolute;
+/// otherwise use HOME/.config.
 fn config_path(xdg: Option<OsString>, home: Option<OsString>) -> Option<PathBuf> {
     let base = xdg
         .map(PathBuf::from)
@@ -530,8 +413,7 @@ fn config_path(xdg: Option<OsString>, home: Option<OsString>) -> Option<PathBuf>
     Some(base.join("wayhud").join("config.toml"))
 }
 
-/// The compiled-in typing speed, also the one a flag falls back to when it
-/// switches a typewriter on over a preset that had none.
+/// Default typing speed, also used when CLI overrides enable typing.
 pub const DEFAULT_CPS: f64 = 28.0;
 
 fn d_cps() -> f64 {
@@ -540,8 +422,7 @@ fn d_cps() -> f64 {
 fn d_cursor() -> bool {
     true
 }
-/// The compiled-in vanish duration, also used as the fallback when a preset
-/// has no duration of its own to carry over.
+/// Default vanish duration when the preset has none.
 pub const DEFAULT_VANISH_MS: u64 = 420;
 
 fn d_vanish_ms() -> u64 {
@@ -568,7 +449,7 @@ mod tests {
         let c: Config = toml::from_str("[style.alert]\ncolor = \"#ff0000\"\n").unwrap();
         let s = c.style("alert").unwrap();
         assert_eq!(s.color, "#ff0000");
-        // Everything else must still be the compiled default, not zeroed.
+
         assert_eq!(s.font, Style::default().font);
         assert_eq!(s.timeout_ms, 5000);
     }
@@ -587,7 +468,7 @@ mod tests {
             "unset key must come from [style.default]"
         );
         assert_eq!(s.timeout_ms, 1234);
-        // And a key neither block sets still falls through to the compiled one.
+
         assert_eq!(s.margin, Style::default().margin);
     }
 
@@ -603,8 +484,7 @@ mod tests {
 
     #[test]
     fn sub_tables_merge_key_by_key() {
-        // sound has no discriminant, so a preset tweaking one knob keeps the
-        // rest of the base's sound rather than resetting it.
+        // Sound fields merge without a variant discriminant.
         let c: Config = toml::from_str(
             "[style.default]\nsound = { enabled = false, freq = 900.0 }\n\
              [style.a]\nsound = { freq = 1500.0 }\n",
@@ -617,18 +497,16 @@ mod tests {
 
     #[test]
     fn changing_kind_replaces_the_table_instead_of_mixing_variants() {
-        // Merging key-by-key here would leave `dir` on a collapse and `ms`
-        // from a fade, and deny_unknown_fields would reject the result.
+        // Changing kind must discard fields specific to the old variant.
         let c: Config = toml::from_str(
             "[style.default]\nvanish = { kind = \"wash\", ms = 700, dir = \"up\" }\n\
              [style.a]\nvanish = { kind = \"collapse\" }\n\
              [style.b]\nvanish = { ms = 250 }\n",
         )
         .unwrap();
-        // Different kind: the whole table is replaced, ms falls back to the
-        // compiled default rather than inheriting the wash's 700.
+        // A different kind resets ms to the built-in default.
         assert_eq!(c.style("a").unwrap().vanish, Vanish::Collapse { ms: 420 });
-        // Same (absent) kind: merged, so it stays a wash and keeps dir.
+        // An omitted kind preserves the base variant and its fields.
         assert_eq!(
             c.style("b").unwrap().vanish,
             Vanish::Wash {
@@ -640,10 +518,7 @@ mod tests {
 
     #[test]
     fn a_misspelled_key_inside_a_reveal_or_vanish_table_is_rejected() {
-        // deny_unknown_fields on Style stops at the enum: the attribute the
-        // test above relies on has to be on Reveal and Vanish themselves.
-        // Without it a typo loaded in silence and the effect ran on defaults,
-        // so the knob that appeared to do nothing was not the one at fault.
+        // Enum fields need their own `deny_unknown_fields` attribute.
         for table in [
             "reveal = { kind = \"typewriter\", cps = 40, bogus = 1 }",
             "vanish = { kind = \"fade\", ms = 100, bogus = 1 }",
@@ -666,10 +541,7 @@ mod tests {
 
     #[test]
     fn a_preset_inheriting_its_kind_survives_load() {
-        // The load-time type check runs before the merge unless it is careful:
-        // `vanish = { ms = 250 }` has no `kind` of its own, and rejecting it
-        // there made the whole file unloadable — including presets that were
-        // perfectly fine.
+        // Validate after merging so presets can inherit `kind`.
         let cfg = load_from_text(
             "[style.default]\nvanish = { kind = \"wash\", ms = 700, dir = \"up\" }\n\
              [style.faster]\nvanish = { ms = 250 }\n",
@@ -721,9 +593,7 @@ mod tests {
 
     #[test]
     fn typo_in_a_field_name_is_rejected() {
-        // deny_unknown_fields: a silently ignored key is worse than a crash.
-        // Presets are held as raw tables now, so the rejection happens when
-        // one is resolved (and, for a file on disk, at load — see below).
+        // Raw tables reject unknown fields during resolution and file loading.
         let c: Config = toml::from_str("[style.a]\ncolour = \"#fff\"\n").unwrap();
         assert!(c.style("a").is_err());
     }
@@ -748,8 +618,7 @@ mod tests {
             c.style("a").unwrap().reveal,
             Reveal::Typewriter { scroll: false, .. }
         ));
-        // The whole reason the merge is table-by-table: a preset asking for
-        // terminal mode must keep the base's speed rather than reset it.
+        // Changing scroll must preserve the inherited speed.
         let c: Config = toml::from_str(
             "[style.default]\nreveal = { kind = \"typewriter\", cps = 12 }\n\
              [style.a]\nreveal = { scroll = true }\n",
@@ -774,7 +643,7 @@ mod tests {
 
     #[test]
     fn sound_knobs_are_range_checked() {
-        // decay_ms sizes the synth buffer; 1e9 aborted the process.
+        // `decay_ms` controls allocation size.
         for bad in [
             "sound = { decay_ms = 1e9 }",
             "sound = { freq = 0.0 }",
@@ -797,10 +666,7 @@ mod tests {
 
     #[test]
     fn a_non_positive_cps_is_rejected_not_silently_instant() {
-        // Negative or zero must not quietly become an instant reveal: zero
-        // still types instantly but keeps the Typewriter variant, so the HUD
-        // reserves caret room and blinks through the hold. For no typewriter
-        // the kind must say "instant".
+        // Disabling typing requires `kind = "instant"`.
         for cps in ["-5", "0"] {
             let c: Config = toml::from_str(&format!(
                 "[style.a]\nreveal = {{ kind = \"typewriter\", cps = {cps} }}\n"
@@ -820,8 +686,7 @@ mod tests {
 
     #[test]
     fn config_cannot_smuggle_an_absurd_timeout_past_the_cli_check() {
-        // --timeout is bounded in main; without this the same value simply
-        // moves into the file and pins the overlay to the screen for a year.
+        // The lifetime limit also applies to config values.
         let c: Config = toml::from_str("[style.a]\ntimeout_ms = 31536000000\n").unwrap();
         assert!(c.style("a").is_err());
         let c: Config = toml::from_str("[style.a]\ntimeout_ms = 3600000\n").unwrap();
@@ -846,9 +711,7 @@ mod tests {
 
     #[test]
     fn an_unusable_xdg_config_home_falls_back_to_home() {
-        // XDG_CONFIG_HOME="" used to resolve to ./wayhud/config.toml, relative
-        // to wherever the process started, while the real config in $HOME went
-        // unread. The spec uses the variable only when it is an absolute path.
+        // Empty and relative XDG paths must fall back to HOME.
         let home = || Some(OsString::from("/home/u"));
         let want_home = PathBuf::from("/home/u/.config/wayhud/config.toml");
 
@@ -870,9 +733,7 @@ mod tests {
 
     #[test]
     fn shipped_example_config_parses() {
-        // README calls this file the reference for every key. With
-        // deny_unknown_fields a stale example is an invalid config, and
-        // without this test the user finds that out, not CI.
+        // Keep the shipped example valid under strict parsing.
         let text = include_str!("../config.example.toml");
         let cfg: Config = toml::from_str(text).expect("config.example.toml must parse");
         for name in ["default", "alert", "quiet", "spy", "wipe", "boot"] {
@@ -890,9 +751,7 @@ mod tests {
 
     #[test]
     fn each_axis_takes_only_its_own_names() {
-        // The whole point of splitting Align in two: one shared enum meant
-        // `halign` and `valign` accepted the same three words, and you had to
-        // remember which edge "start" was on for which axis.
+        // Reject values from the wrong alignment axis.
         let c: Config =
             toml::from_str("[style.a]\nhalign = \"left\"\nvalign = \"bottom\"\n").unwrap();
         let s = c.style("a").unwrap();
@@ -942,8 +801,7 @@ mod tests {
 
     #[test]
     fn every_vanish_reports_its_duration() {
-        // ms() feeds the timeline; a variant missing from that match arm would
-        // silently animate for zero milliseconds.
+        // Every timed variant must contribute its duration to the timeline.
         for (toml_kind, want) in [
             ("instant", 0),
             ("fade", 420),

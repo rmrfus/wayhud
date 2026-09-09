@@ -1,37 +1,24 @@
-# Copy to $XDG_CONFIG_HOME/wayhud/config.toml.
+# Copy to ~/.config/wayhud/config.toml, or $XDG_CONFIG_HOME/wayhud/config.toml.
+# See man 5 wayhud for keys, defaults and ranges.
 #
-# Every key with its type, default and range: man 5 wayhud
-#
-# Every key here also has a flag, using the same names: the table below is
-#   wayhud --glow '#b8bb26,radius=12,alpha=0.55' --reveal 'cps=28,scroll=true'
-# A flag states only what it changes; the rest comes from the preset.
-#
-# [style.default] is the base for every other preset: a key a preset does not
-# set is taken from there, and only then from the compiled-in default. Unknown
-# keys are an error, so a typo tells you instead of quietly doing nothing.
-#
-# Sub-tables merge key by key, except when the preset changes a "kind" — a
-# different vanish or reveal variant replaces the table outright, since the
-# leftover keys would belong to the other variant.
+# Presets inherit from [style.default], then built-in defaults. Sub-tables
+# merge by field; changing kind replaces the table. Unknown keys are errors.
+# CLI flags override individual fields in the selected preset.
 
 [style.default]
-# "Monospace" is a fontconfig generic and always resolves; a real family
-# name has to match fontconfig exactly or it silently falls back.
+# Use the system monospace font. Check named families with fc-match.
 font = "Monospace 72"
 color = "#b8bb26"           # gruvbox bright green
 outline = "#1d2021"         # gruvbox bg0_hard
-# outline_width = 5.0      # omit to scale with the font size (size / 14)
-# A halo behind the glyphs, drawn UNDER the outline rather than instead of it.
-# Omit for none; radius = 0 switches off one inherited from here.
+# outline_width = 5.0      # omit to scale with font size (size / 14)
+# Glow is drawn behind the outline. radius = 0 disables inherited glow.
 # glow = { color = "#b8bb26", radius = 12.0, alpha = 0.55 }
 halign = "center"           # left | center | right
 valign = "center"           # top  | center | bottom
-margin = 64                 # to the SURFACE, not the text; anchored axes only
+margin = 64                 # surface-to-edge gap; anchored axes only
 line_align = "left"         # alignment of lines inside the block
-timeout_ms = 5000           # hold AFTER the reveal finishes
-# The typewriter fills the block downwards from its top edge. Adding
-# scroll = true here picks the other fill - terminal mode, where the line being
-# written stays on the BOTTOM line and earlier ones rise. See [style.boot].
+timeout_ms = 5000           # hold after reveal
+# scroll = true keeps the current line at the bottom; see [style.boot].
 reveal = { kind = "typewriter", cps = 28, cursor = true }
 # instant | fade | collapse | wash (dir = down|up) | untype | dissolve
 vanish = { kind = "collapse", ms = 420 }
@@ -50,7 +37,7 @@ reveal = { kind = "instant" }
 vanish = { kind = "fade", ms = 200 }
 sound = { enabled = false }
 
-# Self-destructing message: types in, sits, then clicks its way back out.
+# Typewriter reveal and reverse erase.
 [style.spy]
 color = "#8ec07c"           # gruvbox bright aqua
 reveal = { kind = "typewriter", cps = 18, cursor = true, jitter = 0.35 }
@@ -60,10 +47,7 @@ vanish = { kind = "untype", ms = 900 }
 reveal = { kind = "instant" }
 vanish = { kind = "wash", ms = 600, dir = "up" }
 
-# Terminal mode: each line lands on the bottom row of the block and pushes what
-# came before it up. Everything else is the plain typewriter above - only the
-# fill differs. The surface never moves either way, so this works under any
-# valign; with "bottom" the writing stays on the bottom margin throughout.
+# Scroll earlier lines up from the bottom-left corner.
 [style.boot]
 font = "Monospace 28"
 halign = "left"

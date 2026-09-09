@@ -1,14 +1,9 @@
-//! The animation state machine. Pure arithmetic on milliseconds — no GTK, no
-//! clock — so the phase boundaries can be unit-tested instead of eyeballed.
-//!
-//! The hold is measured from the END of the reveal, per the CLI contract:
-//! `--timeout 5` means five seconds of readable text, whatever the typewriter
-//! spent getting there.
+//! Reveal, hold and vanish timing in milliseconds, independent of GTK and
+//! clocks. The hold starts after the reveal completes.
 
 use crate::config::{Reveal, Vanish};
 
-/// A tiny xorshift64*. Not for anything that matters — it decides how long a
-/// keystroke waits — but seeded explicitly so a run is reproducible in a test.
+/// Seeded xorshift64* for reproducible typing jitter.
 struct Rng(u64);
 
 impl Rng {
@@ -42,24 +37,14 @@ pub enum Phase {
 
 #[derive(Clone, Debug)]
 pub struct Timeline {
-    /// When each character becomes visible, in ms from t0, ascending. Empty
-    /// for an instant reveal.
-    ///
-    /// Materialised rather than computed on demand because jitter makes the
-    /// gaps unequal: the animation and the blip track have to agree on the
-    /// exact same moments, and two formulas would drift apart the day one of
-    /// them changed.
+    /// Character reveal times in ascending milliseconds from t0. Empty for
+    /// instant reveal. Animation and audio share these times, including jitter.
     steps: Vec<f64>,
     chars: usize,
     reveal_ms: f64,
     hold_ms: f64,
     vanish_ms: f64,
-    /// Which characters are worth a blip: whitespace never clicks, and a
-    /// space bar on a movie terminal does not either.
-    ///
-    /// Kept here rather than re-derived from the text on every call, so a
-    /// caller cannot hand `onsets` a different string from the one the
-    /// timeline was built for.
+    /// Cached non-whitespace character positions eligible for blips.
     audible: Vec<bool>,
     /// Untype erases character by character, so it gets blips of its own.
     untype: bool,
@@ -76,8 +61,8 @@ impl Timeline {
         let chars = text.chars().count();
         let steps = match reveal {
             Reveal::Instant => Vec::new(),
-            // A non-positive cps in the config would divide by zero and hang
-            // the HUD on screen forever; treat it as "instant" instead.
+            // Defensive fallback for non-positive cps; normal input is
+            // validated earlier.
             Reveal::Typewriter { cps, .. } if *cps <= 0.0 => Vec::new(),
             Reveal::Typewriter { cps, jitter, .. } => {
                 let base = 1000.0 / cps;
@@ -86,9 +71,8 @@ impl Timeline {
                 let mut t = 0.0;
                 (0..chars)
                     .map(|_| {
-                        // 1 +/- jitter. Clamped at 1.0 above, so the factor
-                        // cannot go negative and the sequence stays ascending
-                        // — phase_at counts on that.
+                        // Clamping jitter to 1 keeps gaps non-negative and
+                        // steps sorted.
                         let factor = 1.0 + jitter * (rng.unit() * 2.0 - 1.0);
                         t += base * factor;
                         t
@@ -109,9 +93,8 @@ impl Timeline {
 
     pub fn phase_at(&self, t_ms: f64) -> Phase {
         if t_ms < self.reveal_ms {
-            // A character is visible once its own moment has passed. The
-            // steps ascend, so this is a partition point.
-            // partition_point cannot exceed the slice length, which is chars.
+            // Sorted steps allow a partition-point lookup bounded by the
+            // character count.
             return Phase::Reveal {
                 chars: self.steps.partition_point(|&s| s <= t_ms),
             };
@@ -129,18 +112,14 @@ impl Timeline {
         Phase::Done
     }
 
-    /// When each blip should sound, in seconds from t0.
-    ///
-    /// Whitespace is skipped: a space key on a movie terminal doesn't click,
-    /// and blipping on newlines sounds like a stutter.
+    /// Blip times in seconds from t0, excluding whitespace.
     pub fn onsets(&self, every: usize) -> Vec<f64> {
         if self.steps.is_empty() {
             return Vec::new();
         }
         let every = every.max(1);
         self.blip_indices(every)
-            // The same moment the character appears on screen — one source of
-            // truth, so jitter cannot desynchronise sound from animation.
+            // Use the same onset as the visual reveal.
             .filter_map(|i| self.steps.get(i).map(|ms| ms / 1000.0))
             .collect()
     }
@@ -153,17 +132,14 @@ impl Timeline {
             .map(|(i, _)| i)
     }
 
-    /// Blips for an untype vanish, in seconds from the START OF THE VANISH —
-    /// not from t0. The caller delays playback by `vanish_start()` instead, so
-    /// a long hold never turns into allocated silence.
-    ///
-    /// Empty for every other mode: nothing is being struck, so nothing clicks.
+    /// Untype blip times in seconds from the start of vanish. The caller delays
+    /// playback by `vanish_start()` to avoid allocating hold-time silence.
+    /// Other effects return no onsets.
     pub fn vanish_onsets(&self, every: usize) -> Vec<f64> {
         if !self.untype || self.vanish_ms <= 0.0 || self.chars == 0 {
             return Vec::new();
         }
-        // The erase runs at a steady rate: it is a machine undoing the text,
-        // not a person typing it.
+        // Erase at a constant rate.
         let step = self.vanish_ms / self.chars as f64 / 1000.0;
         self.blip_indices(every.max(1))
             // Erased from the end: the last character goes first.
@@ -176,11 +152,8 @@ impl Timeline {
         (self.reveal_ms + self.hold_ms) / 1000.0
     }
 
-    /// How many characters are still on screen `p` through an untype vanish.
-    ///
-    /// Lives here, next to `vanish_onsets`, because the two have to agree:
-    /// the blip for character `i` must sound on the frame the count falls to
-    /// `i`. Kept apart they matched only by arithmetic coincidence.
+    /// Visible character count during untype, matched to `vanish_onsets`
+    /// timing.
     pub fn untype_visible(&self, p: f64) -> usize {
         (((1.0 - p) * self.chars as f64).ceil() as usize).min(self.chars)
     }
@@ -226,7 +199,7 @@ mod tests {
 
     #[test]
     fn hold_starts_after_the_reveal_not_at_t0() {
-        // 10 chars at 10 cps = 1000 ms of typing, THEN 5000 ms of hold.
+        // 10 characters at 10 cps: 1000 ms reveal, then 5000 ms hold.
         let tl = timeline("0123456789", &tw(10.0), 5000, &Vanish::Instant);
         assert_eq!(tl.phase_at(999.0), Phase::Reveal { chars: 9 });
         assert_eq!(tl.phase_at(1000.0), Phase::Hold);
@@ -251,7 +224,6 @@ mod tests {
 
     #[test]
     fn zero_cps_does_not_divide_by_zero() {
-        // A config typo must not leave the HUD pinned on screen forever.
         let tl = timeline("abc", &tw(0.0), 10, &Vanish::Instant);
         assert_eq!(tl.phase_at(0.0), Phase::Hold);
         assert_eq!(tl.phase_at(10.0), Phase::Done);
@@ -285,23 +257,20 @@ mod tests {
         assert_eq!(on.len(), 4);
         // Char 3 (the last) is erased first, char 0 last.
         assert!(on[3] < on[0], "erase order must be reversed: {on:?}");
-        // Relative to the vanish, so bounded by its duration however long the
-        // hold was — that is what keeps the mixed track small.
+        // Onsets stay within the vanish duration regardless of hold time.
         assert!(on.iter().all(|&t| t <= 0.4), "not vanish-relative: {on:?}");
     }
 
     #[test]
     fn a_huge_hold_does_not_inflate_the_vanish_onsets() {
-        // The bug this guards: onsets measured from t0 made typewriter_track
-        // allocate silence for the whole timeout — an hour was a gigabyte.
+        // A long hold must not add silence to the mixed track.
         let tl = timeline("ab", &tw(10.0), 3_600_000, &Vanish::Untype { ms: 200 });
         assert!(tl.vanish_onsets(1).iter().all(|&t| t <= 0.2));
     }
 
     #[test]
     fn an_untype_blip_lands_when_its_character_disappears() {
-        // Ties the sound to the picture: character i is erased exactly as the
-        // visible count drops to i.
+        // Each blip coincides with removal of its character.
         let tl = timeline("abcdef", &tw(10.0), 0, &Vanish::Untype { ms: 600 });
         let onsets = tl.vanish_onsets(1);
         for (i, t) in onsets.iter().enumerate() {
@@ -361,7 +330,7 @@ mod tests {
             g.windows(2).any(|w| (w[0] - w[1]).abs() > 1e-6),
             "jitter produced identical gaps: {g:?}"
         );
-        // Monotonic moments are what phase_at's partition_point relies on.
+        // `partition_point` requires sorted times.
         assert!(
             tl.steps.windows(2).all(|w| w[0] <= w[1]),
             "steps not ascending"
@@ -400,8 +369,7 @@ mod tests {
 
     #[test]
     fn sound_onsets_are_the_same_moments_as_the_animation() {
-        // The reason steps are materialised: with jitter, a second formula
-        // for the blip times would drift away from what is on screen.
+        // Jittered audio onsets must match character reveal times.
         let tl = timeline("abcd", &tw_jitter(10.0, 0.5), 0, &Vanish::Instant);
         let onsets = tl.onsets(1);
         assert_eq!(onsets.len(), 4);

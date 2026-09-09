@@ -2,12 +2,7 @@
 name = "wayhud"
 version = "1.0.0"
 edition = "2024"
-# The gtk-rs family is the ceiling: pango, pangocairo and gtk4-sys all declare
-# 1.92. Our own floor is lower but not as low as it looks — edition 2024 needs
-# 1.85 and the let-chain in Config::merged needs 1.88. Stating it does not
-# improve the error an older toolchain gives; what it buys is clippy gating its
-# suggestions on it, incompatible_msrv firing against it, and the resolver
-# picking dependency versions that respect it.
+# Required by gtk-rs dependencies.
 rust-version = "1.92"
 description = "Layer-shell text overlay for sway — sci-fi HUD messages"
 license = "MIT"
@@ -19,22 +14,17 @@ anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 gtk = { package = "gtk4", version = "0.11", features = ["v4_12"] }
 gtk-layer-shell = { package = "gtk4-layer-shell", version = "0.8" }
-# Version must track the pango/cairo-rs that gtk4 pulls in (0.22.x), or the
-# Layout/Context types won't be the same types.
+# Match the pango/cairo-rs versions used by gtk4 to keep types compatible.
 pangocairo = "0.22"
 serde = { version = "1", features = ["derive"] }
 swayipc = "4"
 toml = "0.8"
-# Same audio path as blyamk: synth straight to PipeWire/PulseAudio, no assets.
+
 libpulse-binding = "2"
 libpulse-simple-binding = "2"
 
-# The no-panic rule, machine-checked. These live in clippy's `restriction`
-# group, which is allow-by-default and is not switched on by `clippy::all` or
-# `pedantic` — each has to be named. `warn` plus the `-D warnings` CI already
-# passes is what makes them fail; a crate-level `#![deny]` would poison
-# #[cfg(test)] code and need an #[allow] on every test. See clippy.toml for the
-# in-test exemptions.
+# CI promotes these restriction lints to errors with -D warnings.
+# Test exemptions are in clippy.toml.
 [lints.clippy]
 unwrap_used = "warn"
 expect_used = "warn"
@@ -43,11 +33,7 @@ unreachable = "warn"
 todo = "warn"
 unimplemented = "warn"
 dbg_macro = "warn"
-# These four are what keep the rest of the house rules from being prose: `exit`
-# enforces returning ExitCode rather than killing the process mid-stack,
-# `print_stdout` the "stdout is payload, diagnostics go to stderr" rule, and
-# the unsafe pair the SAFETY-comment rule. Unenforced, each is a convention a
-# green build can violate.
+# Return ExitCode, keep diagnostics on stderr, and document unsafe blocks.
 exit = "warn"
 print_stdout = "warn"
 undocumented_unsafe_blocks = "warn"

@@ -1,9 +1,8 @@
 {
   description = "wayhud — heads-up text overlay for sway";
 
-  # Indirect ref: on a machine whose flake registry already has nixpkgs
-  # realised (e.g. the author's), this reuses that store path. Consumers get
-  # whatever the lock pins — override with inputs.wayhud.inputs.nixpkgs.follows.
+  # Registry reference pinned by flake.lock. Consumers can override via
+  # inputs.wayhud.inputs.nixpkgs.follows.
   inputs.nixpkgs.url = "flake:nixpkgs";
 
   outputs = { self, nixpkgs }:
@@ -12,9 +11,7 @@
       forAll = f: nixpkgs.lib.genAttrs systems
         (system: f nixpkgs.legacyPackages.${system});
 
-      # C libs the gtk4-rs / libpulse crates link against. The gtk4-rs sibling
-      # crates (cairo-rs, pango, gdk-pixbuf, graphene) each link their own C
-      # library directly, so every one needs its .pc file at build time.
+      # Native dependencies and pkg-config metadata for gtk4-rs and libpulse.
       nativeLibs = pkgs: with pkgs; [
         gtk4
         gtk4-layer-shell
@@ -29,17 +26,15 @@
       packages = forAll (pkgs: {
         default = pkgs.rustPlatform.buildRustPackage {
           pname = "wayhud";
-          # Read straight from Cargo.toml so the two never drift apart.
+
           version = (builtins.fromTOML (builtins.readFile ./Cargo.toml)).package.version;
           src = self;
-          # Cargo.lock is committed, so deps resolve straight from it — no
-          # cargoHash to recompute on every dependency bump.
+
           cargoLock.lockFile = ./Cargo.lock;
 
           nativeBuildInputs = with pkgs; [
             pkg-config
-            # GTK looks up its GSettings schemas at run time; without the wrap
-            # the binary works only on hosts that happen to have them exported.
+            # Expose GTK GSettings schemas at runtime.
             wrapGAppsHook4
           ];
           buildInputs = nativeLibs pkgs;
@@ -50,10 +45,7 @@
           '';
 
           meta = with pkgs.lib; {
-            # Same line as Cargo.toml's `description`, which is the canonical
-            # one: this is what `nix search` and `nix profile list` render, and
-            # a package described differently in two places is one a stranger
-            # cannot match up.
+            # Keep in sync with Cargo.toml's package description.
             description = "Layer-shell text overlay for sway — sci-fi HUD messages";
             homepage = "https://github.com/rmrfus/wayhud";
             license = licenses.mit;
@@ -77,8 +69,7 @@
             cargo-machete # finds a [dependencies] entry nothing imports
             groff # man page lint: groff -man -Tutf8 -ww -z man/man{1,5}/wayhud.*
           ];
-          # cargo doesn't RPATH the nix store, so binaries run straight from
-          # ./target need the shared objects on the loader path.
+          # Expose shared libraries for binaries run directly from target/.
           LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath (nativeLibs pkgs);
         };
       });

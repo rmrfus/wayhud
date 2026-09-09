@@ -4,18 +4,10 @@
 [![Release](https://img.shields.io/github/v/release/rmrfus/wayhud?logo=github)](https://github.com/rmrfus/wayhud/releases/latest)
 [![License](https://img.shields.io/github/license/rmrfus/wayhud)](LICENSE)
 
-Big heads-up messages over everything on sway. Text goes up as a
-`zwlr_layer_shell_v1` overlay, optionally typed out terminal-style with a caret
-and a synthesised blip per keystroke, and leaves with one of several exit
-animations.
+Text overlays for sway, with typewriter animation, a caret, synthesised sound
+and exit effects. The overlay is click-through and does not take keyboard focus.
 
-![wayhud — a message typed out over the desktop, then dissolving](assets/demo.gif)
-
-> Real capture, bottom-right corner of one output: `--reveal 'cps=50'` typing a
-> three-line message in, then `--vanish dissolve` taking it apart.
-
-The overlay keeps an empty input region, so it never steals a click or a
-keystroke from whatever is underneath.
+![wayhud typing a message, then dissolving](assets/demo.gif)
 
 ```sh
 wayhud "SYSTEM ONLINE"
@@ -24,52 +16,45 @@ wayhud --vanish 'untype,ms=900' "THIS MESSAGE WILL SELF DESTRUCT"
 journalctl -n 3 -u nginx | wayhud --reveal instant --color '#fb4934'
 ```
 
-Piped input is read to EOF before anything is shown, so a stream that never
-ends (`journalctl -f`, `tail -f`) will never display.
-
 ## Install
 
-### As a Nix package (flake)
-
-The flake exposes a `default` package — no clone needed:
+### Nix
 
 ```sh
-nix run   github:rmrfus/wayhud -- "HELLO"   # run without installing
-nix build github:rmrfus/wayhud              # ./result/bin/wayhud
-nix profile install github:rmrfus/wayhud    # install into your profile
+nix run github:rmrfus/wayhud -- "HELLO"
+nix build github:rmrfus/wayhud           # ./result/bin/wayhud
+nix profile install github:rmrfus/wayhud
 ```
 
-Pull it into a NixOS / home-manager flake as an input:
+Add the flake input:
 
 ```nix
-{
-  inputs.wayhud.url = "github:rmrfus/wayhud";
-  # ...
-  environment.systemPackages = [ inputs.wayhud.packages.${system}.default ];
-}
+inputs.wayhud.url = "github:rmrfus/wayhud";
+```
+
+Then add the package in a NixOS module with access to `inputs`:
+
+```nix
+environment.systemPackages = [
+  inputs.wayhud.packages.${pkgs.stdenv.hostPlatform.system}.default
+];
 ```
 
 ### From source
 
-Needs `pkg-config` and Rust 1.92 or newer (the floor comes from the gtk-rs
-crates, not from our own code), plus the development headers for GTK4,
-layer-shell and PulseAudio: `gtk4`, `gtk4-layer-shell`, `glib`, `cairo`,
-`pango`, `gdk-pixbuf`, `graphene`, `libpulse` — the `-dev` or `-devel` half of
-whatever your distribution calls them. On a Nix box `nix develop` (or `direnv
-allow`) provides the lot.
+Requires Rust 1.92+, `pkg-config`, and development packages for `gtk4`,
+`gtk4-layer-shell`, `glib`, `cairo`, `pango`, `gdk-pixbuf`, `graphene` and
+`libpulse`. `nix develop` provides these dependencies.
 
 ```sh
-make                                  # cargo build --release
-sudo make install                     # into /usr/local
-make install PREFIX="$HOME/.local"    # or just for yourself
-make uninstall                        # the PREFIX you installed with
+make
+sudo make install                  # /usr/local
+make install PREFIX="$HOME/.local" # user installation
+make uninstall                     # use the same PREFIX
 ```
 
-`make install` is there because `cargo install` copies the binary and nothing
-else. Both man pages go with it — `man 5 wayhud` is the config reference the
-rest of this README keeps pointing at. Packagers get the usual staging
-variable, and `install` never rebuilds, so running it under `sudo` cannot
-leave `target/` owned by root:
+`make install` installs the binary and both man pages. It requires a prior
+build and supports staging with `DESTDIR`:
 
 ```sh
 make && make install DESTDIR="$pkgdir" PREFIX=/usr
@@ -77,14 +62,13 @@ make && make install DESTDIR="$pkgdir" PREFIX=/usr
 
 ## Usage
 
-See `man 1 wayhud` for the full reference, and `man 5 wayhud` for the config
-file format.
+See `man 1 wayhud` for CLI details and `man 5 wayhud` for configuration.
 
 | Flag            | Default   | Meaning                                                            |
 | --------------- | --------- | ------------------------------------------------------------------ |
 | `TEXT`          | —         | Message, at most 100000 chars. Omit or pass `-` to read stdin.     |
 | `-o, --output`  | `current` | `current`, `all`, or `DP-3,eDP-1`                                  |
-| `-t, --timeout` | `5`       | Hold in **seconds**, counted from the END of the reveal            |
+| `-t, --timeout` | `5`       | Hold in **seconds**, after the reveal                              |
 | `-s, --style`   | `default` | Preset from the config file                                        |
 | `--font`        | —         | Pango description, e.g. `"Monospace 72"`                           |
 | `--color`       | —         | Any CSS colour GTK parses                                          |
@@ -96,166 +80,117 @@ file format.
 | `--reveal`      | —         | `instant` or `typewriter`; `cps=`, `cursor=`, `jitter=`, `scroll=` |
 | `--vanish`      | —         | Effect name; `ms=`, and `dir=` on `wash`                           |
 | `--sound`       | —         | `on`/`off`; `freq=`, `decay_ms=`, `gain=`, `every=`                |
-| `--raw`         | —         | Take the argument literally (no `\n` / `\t` expansion)             |
+| `--raw`         | —         | Literal argument (no escape expansion)                             |
 | `--config`      | XDG path  | Config file location                                               |
 
 ### Flag fields
 
-Every flag that stands for a config table takes the same shape: an optional
-bare value first, then comma-separated `key=value` pairs. The keys are spelled
-exactly as the TOML keys are, so a flag and a preset are the same words in the
-same order:
+Composite flags take an optional bare value followed by comma-separated
+`key=value` fields:
 
 ```sh
-wayhud --glow '#b8bb26,radius=12,alpha=0.7' x
-#      glow = { color = "#b8bb26", radius = 12.0, alpha = 0.7 }
+wayhud --glow '#b8bb26,radius=12,alpha=0.7' "HELLO"
+wayhud --reveal 'typewriter,cps=50,scroll=true' "READY"
 ```
 
-The bare value is the field a flag is usually about — the colour for `--glow`
-and `--outline`, the kind for `--reveal` and `--vanish`, `on`/`off` for
-`--sound`. It may also be written by name, and giving it both ways is an error
-rather than something to resolve.
+The bare value sets the colour for `--glow` and `--outline`, the kind for
+`--reveal` and `--vanish`, or on/off for `--sound`. Named fields use the TOML
+names, except `--outline width=` corresponds to `outline_width`.
 
-A field the spec does not mention keeps the preset's value. That is what makes
-these composable: `--glow 'alpha=0.3'` dims the halo a preset already
-configured, without restating its colour or radius.
+Omitted fields keep the preset's values: `--glow 'alpha=0.3'` changes only
+opacity. Unknown fields, duplicate values and invalid ranges are errors.
+Typewriter fields require a typewriter preset or an explicit
+`--reveal 'typewriter,cps=50'`.
 
-An unknown field is refused with the list of the ones that exist, the way
-`deny_unknown_fields` refuses a typo in the config file:
+### Input and timing
 
-```
-$ wayhud --reveal 'typewriter,speed=50' x
-wayhud: --reveal: unknown field "speed" (want kind, cps, cursor, jitter, scroll)
-```
+Arguments expand `\n`, `\t` and `\\` unless `--raw` is set. Stdin does not
+expand escapes. Trailing newlines are removed on both paths; messages over
+100000 characters are rejected with an error.
 
-Ranges are checked once, by the same code the config file goes through, so a
-bound cannot hold in one place and not the other.
+Stdin reading stops at EOF or 400001 bytes, whichever comes first. Reaching
+the byte limit is an error. Nothing displays before EOF: a quiet `tail -f`
+can wait indefinitely, while a continuous stream that reaches the limit
+exits with an error.
 
-Synonyms the flags took before 1.0 and the config file never did — `centre`,
-`wash-up`, `crt`, `none` for `instant` — are gone for the same reason. Each is
-refused with the spelling that replaces it, not just refused.
+`--timeout` is the hold time after reveal, in seconds; the config uses
+`timeout_ms`. Reveal, hold and vanish together must fit within one hour.
+Overlays cannot be dismissed early.
 
-The hold timeout is measured from the **end** of the reveal, not from start-up,
-so a slow typewriter doesn't eat into the reading time. It is the one number
-that differs between the two: `--timeout` is in seconds, `timeout_ms` in
-milliseconds.
+### Outputs
 
-The whole lifetime — reveal plus hold plus vanish — is capped at one hour, and a
-message that would exceed it is refused rather than shown: nothing can dismiss a
-HUD early, so a fat-fingered `--timeout`, a `--reveal 'cps=0.01'` or an absurd
-`--vanish 'fade,ms=99999999'` would all strand it on screen.
+`--output current` queries sway's focused output through IPC. Socket lookup
+uses `I3SOCK`, then `SWAYSOCK`, then asks `i3` or `sway` for the path. Failure
+to locate the focused output is an error.
 
-A typewriter field over a preset that reveals instantly is an error rather than
-a flag that quietly does nothing: there is nothing to adjust, so say
-`--reveal 'typewriter,cps=50'` and switch it on deliberately.
+Missing named connectors are reported and skipped. If no outputs match, the
+command fails.
 
-`\n` and `\t` in the argument are expanded, because sway's `exec` runs through
-`sh`, which has no `$'...'`. Text arriving on stdin is used verbatim.
+### Terminal mode
 
-Trailing newlines are dropped either way. Pango turns one into an empty final
-line and counts it in the height, so the surface is a line taller than the
-message and the compositor centres the phantom along with it — everything sits
-half a line off.
-
-`--output current` asks sway over its IPC socket which output has focus —
-Wayland itself gives a client no way to find that out. The socket is located
-the way `swaymsg` does it (`I3SOCK`, `SWAYSOCK`, then asking `i3` or `sway`
-for its path); if none of that works, it fails rather than guessing. A named
-connector that doesn't exist is reported on stderr and skipped, so
-`-o DP-3,DP-9` still shows up on DP-3 with DP-9 unplugged; matching nothing at
-all is an error.
-
-## Terminal mode
-
-The typewriter fills a message in one of two ways and both ship. By default it
-fills the block **downwards from the top**: the box is sized for the finished
-message up front, so the write head starts at the top edge and walks down
-through the room reserved for the rest. `scroll=true` picks the other one — the
-write head stays on the **last** line of the block, and reaching a newline
-lifts everything already written by one line.
+The default typewriter fills the block from the top. With `scroll=true`, the
+current line stays at the bottom and earlier lines move up:
 
 ```sh
-# terminal: every line lands on the bottom row and pushes the rest up
 wayhud --reveal 'scroll=true' --position bottom-left \
        "CHECKING DISKS\nMOUNTING /\nBRINGING UP eth0\nOK"
-
-# the default: the same message, filled downwards from the top
-wayhud --position bottom-left \
-       "CHECKING DISKS\nMOUNTING /\nBRINGING UP eth0\nOK"
 ```
 
-Nothing else differs between the two. The surface is sized from the finished
-message and placed before the first character is drawn either way, so the mode
-moves the text inside the box and never the box itself — which is why it needs
-no particular anchor and holds under any `--position`. With `bottom` the
-writing sits on the bottom margin the whole way through, which is the terminal
-look; with `center` or `top` the block stays where it was put and fills from
-its own bottom edge upwards. A message with no newlines draws identically in
-both modes — there is nothing above it to lift.
+The surface is sized for the full message and stays fixed in both modes.
+Terminal mode works at any position; `untype` reverses the scroll as lines
+are erased. Use `scroll=false` to override a terminal-mode preset.
 
-It switches both ways, so a preset that asks for terminal mode can be put back:
-`--reveal 'scroll=false'`.
+### Vanish effects
 
-An `untype` vanish runs the terminal rule backwards, because the offset follows
-the write head rather than the clock: the block slides back down as the lines
-are eaten.
+| Kind       | Effect                                                    |
+| ---------- | --------------------------------------------------------- |
+| `instant`  | Disappear when the hold ends                              |
+| `fade`     | Fade to transparent                                       |
+| `collapse` | Squash to a bright line, flash and disappear              |
+| `wash`     | Erase with a moving soft edge                             |
+| `untype`   | Erase characters in reverse order, with a caret and sound |
+| `dissolve` | Disappear in pseudo-random blocks                         |
 
-## Vanish effects
+All effects except `instant` accept `ms=`. `wash` also accepts `dir=down`
+(default) or `dir=up`:
 
-`--vanish <kind>`, or `vanish = { kind = "...", ms = ... }` in a preset — the
-same names on both sides. `instant` takes no `ms`. Without `ms=` the flag keeps
-whatever duration the preset already had, so you can cycle through effects
-without restating the timing; without a kind, `--vanish 'ms=800'` retimes the
-effect the preset chose.
+```sh
+wayhud --vanish 'wash,dir=up,ms=700' "DONE"
+```
 
-| Kind       | What it looks like                                                  |
-| ---------- | ------------------------------------------------------------------- |
-| `instant`  | Gone on the frame the hold expires.                                 |
-| `fade`     | Alpha to zero.                                                      |
-| `collapse` | CRT power-off: squashes to a bright line, blooms wider, blinks out. |
-| `wash`     | A soft edge sweeps through the text, erasing as it passes.          |
-| `untype`   | The caret walks back and eats the text, blipping on the way out.    |
-| `dissolve` | Falls apart into blocks in a fixed pseudo-random order.             |
-
-`wash` carries `dir`, which is `down` (the default) or `up`:
-`--vanish 'wash,dir=up,ms=700'`. Before 1.0 the flag folded the direction into
-the name as `wash-up`, and took `crt` and `none` as aliases; those are gone, so
-that the flag and the config file cannot mean different things by the same
-word.
-
-`untype` is the only one that makes noise — it is typing, so it clicks. It also
-gets a caret even after an instant reveal, since otherwise characters would
-disappear with nothing touching them.
+Omitting `ms` preserves the preset's duration, or uses 420 ms when switching
+from instant. `--vanish 'ms=800'` changes the current effect's duration.
+`--vanish` no longer accepts the pre-1.0 aliases `wash-up`, `crt`, or `none`
+(for `instant`). `--outline none` and `--glow none` remain valid.
 
 ## Config
 
-`$XDG_CONFIG_HOME/wayhud/config.toml` — or `~/.config/wayhud/config.toml` when
-that variable is unset, empty, or not an absolute path — is a flat map of named
-presets picked with `--style`.
-A missing file is fine: every preset is then just the built-in defaults. A
-malformed one, or an unknown key, is an error, so a typo gets reported instead
-of quietly doing nothing.
+The default path is `$XDG_CONFIG_HOME/wayhud/config.toml`, falling back to
+`~/.config/wayhud/config.toml` when the variable is unset or not absolute.
+Use `--config` to select another file.
 
-`[style.default]` is the base for every other preset: a key a preset does not
-set is taken from there, and only then from the built-in default. Sub-tables
-(`reveal`, `vanish`, `sound`) merge key by key — except when the preset picks a
-different `kind`, which replaces the table outright, since the leftover keys
-would belong to the other variant.
+Presets inherit from `[style.default]`, then from built-in defaults.
+Sub-tables merge field by field; changing `kind` replaces that sub-table.
+A missing file uses built-in defaults. Malformed files, unknown keys and
+unknown preset names are errors.
 
 ```toml
 [style.default]
-font = "FiraCode Nerd Font 72"   # a real family; must match fontconfig
+font = "Monospace 72"
 color = "#b8bb26"
 outline = "#1d2021"
 timeout_ms = 5000
 reveal = { kind = "typewriter", cps = 28, cursor = true }
 vanish = { kind = "collapse", ms = 420 }
 
-# Inherits the font, outline and timeout above; changes what it names.
 [style.alert]
 color = "#fb4934"
 vanish = { kind = "wash", ms = 300, dir = "up" }
 ```
+
+Select a preset with `wayhud --style alert "BUILD FAILED"`. See
+[config.example.toml](config.example.toml) for more presets and `man 5 wayhud`
+for all keys, defaults and ranges.
 
 ### Keys
 
@@ -263,108 +198,59 @@ vanish = { kind = "wash", ms = 300, dir = "up" }
 | --------------- | ----------------------- | -------------------------- | ----------------------------------------------------- |
 | `font`          | Pango description       | `"Monospace 72"`           | Family and size in points                             |
 | `color`         | CSS colour              | `"#b8bb26"`                | Glyph fill                                            |
-| `outline`       | CSS colour              | `"#1d2021"`                | Stroke colour; `"none"` or omit for none              |
+| `outline`       | CSS colour              | `"#1d2021"`                | Stroke colour; `"none"` disables it                   |
 | `outline_width` | float, 0–128 logical px | font size / 14             | Stroke width; unset it scales with the font           |
-| `glow`          | table                   | —                          | Halo behind the glyphs; omit for none                 |
+| `glow`          | table                   | —                          | Halo behind the glyphs; `radius = 0` disables it      |
 | `halign`        | `left` `center` `right` | `center`                   | Horizontal placement on the output                    |
 | `valign`        | `top` `center` `bottom` | `center`                   | Vertical placement                                    |
-| `margin`        | int, logical px         | `64`                       | Gap from the anchored edge to the *surface*; see below |
+| `margin`        | int, logical px         | `64`                       | Gap from the anchored edge to the surface             |
 | `line_align`    | `left` `center` `right` | `left`                     | Alignment of lines inside the block                   |
-| `timeout_ms`    | int, ms (max 3600000)   | `5000`                     | Hold, counted from the END of the reveal              |
+| `timeout_ms`    | int, ms (max 3600000)   | `5000`                     | Hold after reveal                                     |
 | `reveal`        | table                   | typewriter, 28 cps, cursor | How the text appears                                  |
 | `vanish`        | table                   | collapse, 420 ms           | How it goes away                                      |
 | `sound`         | table                   | on, 2100 Hz, gain 0.22     | The typewriter blip                                   |
 
-`reveal` is `{ kind = "instant" }` or
-`{ kind = "typewriter", cps = F, cursor = BOOL, jitter = F, scroll = BOOL }`,
-with `cps` positive — for no typewriter the kind must say `instant`. `jitter`
-(0–1, default 0) staggers each keystroke gap by up to that fraction either way,
-so the typing stops sounding like a metronome; the blips use the same moments
-as the glyphs, so they cannot drift apart. `scroll` (default false) chooses
-which way the block is filled: left alone, downwards from the top edge as it
-always was; set true, [terminal mode](#terminal-mode).
+A few settings affect layout:
 
-`vanish` takes the kinds from the *In a preset* column under
-[Vanish effects](#vanish-effects) plus `ms`; note that `wash` is one kind there
-carrying a `dir` of `down` or `up`, not the two names the flag uses.
+- `margin` is measured to the surface. Visible text is inset further by
+  padding for the outline, glow and caret. Centred axes ignore margins.
+- `outline_width` defaults to font size / 14. `outline = "none"` disables it.
+- `glow = { color = "#b8bb26", radius = 12.0, alpha = 0.55 }` adds a halo
+  behind the outline. A larger radius increases padding and reduces wrapping
+  width. `radius = 0` disables inherited glow.
+- `line_align` aligns lines within the block, independently of its position.
 
-`margin` is measured to the surface, not to the text. The surface carries
-transparent padding for the outline, the halo and the caret, so the visible
-distance from the screen edge is `margin` plus that padding — which differs by
-axis and grows with `glow.radius` and the font size. Raising the glow radius
-therefore moves an anchored message away from its edge on its own.
-
-`glow` is `{ color, radius, alpha }` — a blurred halo painted *under* the
-outline, not instead of it, so a dark contour with a coloured bloom outside it
-is one key rather than a choice between two. `radius` is in logical pixels
-(0–128) and `alpha` is the halo's peak opacity. `radius = 0` is off, which is
-how a preset takes back a glow inherited from `[style.default]`.
-
-The halo is blurred once per output when the message is built, not per frame —
-about 35 ms for a three-line message at 72pt on a scale-2 display, whatever the
-radius. It widens the padding, and the padding comes out of the wrapping
-budget, so a very large radius makes long lines wrap sooner.
-
-`sound` is `{ enabled, freq, decay_ms, gain, every }` — knob names match
-[blyamk](https://github.com/rmrfus/blyamk), so a sound dialled in there with
-`blyamk -v` transfers verbatim. `every = N` blips once per N characters;
-whitespace never blips.
-
-Full reference with every value type and range: **`man 5 wayhud`**, or
-[`config.example.toml`](config.example.toml) for a working file.
-
-The default `Monospace` is a fontconfig generic — like `Sans` and `Serif` — so
-it resolves to whatever the system has configured for that role and works on a
-box that has never heard of your typeface.
-
-A real family name has to be spelled the way fontconfig spells it, which is
-rarely how the vendor writes it. `FiraCode Nerd Font` resolves; `Fira Code`
-falls back to the system default, and so does any other name that doesn't
-exist. Nothing warns you — and for a HUD that fallback is usually a
-proportional face where a fixed-width one was meant. Check the name first:
-
-```sh
-fc-match "Fira Code"        # DejaVu Sans — not what you asked for
-fc-match "FiraCode Nerd Font"
-```
+`Monospace` uses the system's fontconfig default. Check named families with
+`fc-match "Family Name"`; unavailable fonts fall back silently.
 
 ## sway
 
-```
+```text
 bindsym $mod+Shift+h exec wayhud "LOCKED\nBACK IN 5"
 ```
 
-The layer namespace is `wayhud`, so compositor rules can key off it.
+The layer namespace is `wayhud`. Concurrent invocations create separate
+overlays, stacked by the compositor.
 
-Under GTK's default Vulkan renderer some compositors log a `vkQueuePresentKHR`
-warning about the swapchain "no longer matching the surface properties" on
-every repaint. It is `VK_SUBOPTIMAL_KHR`, a Vulkan *success* code — the frame
-went up, and only GDK's choice to report it as a warning makes it visible.
-`GSK_RENDERER=opengl` or `GSK_RENDERER=cairo` silences it with no visible
-difference:
+If GTK logs `vkQueuePresentKHR` / `VK_SUBOPTIMAL_KHR` warnings, try selecting
+another renderer:
 
-```
+```text
 bindsym $mod+Shift+h exec env GSK_RENDERER=opengl wayhud "LOCKED"
 ```
 
-wayhud does not set it itself: picking a renderer for the whole graphics stack
-is a larger decision than the message deserves, and on a box where GL is broken
-and Vulkan is not it would trade a warning for a blank screen.
-
-Two concurrent invocations are two processes and two layer surfaces, which the
-compositor stacks. That is deliberate: this is a one-shot tool, not a daemon.
+`GSK_RENDERER=cairo` is another option. wayhud leaves renderer selection to GTK.
 
 ## Sound
 
-The typewriter blip is synthesised rather than sampled, so the binary carries
-no assets. The knobs are the ones from
-[blyamk](https://github.com/rmrfus/blyamk); dial a sound in there with
-`blyamk -v` and copy the numbers into a `[style.X.sound]` block.
+Blips are synthesised with parameters matching
+[blyamk](https://github.com/rmrfus/blyamk). Values from `blyamk -v` can be copied
+into a preset's `sound` table. `every = N` plays a blip every N characters;
+whitespace is silent.
 
-The whole click track is mixed before the first frame and handed to PulseAudio
-in one write, so the clicks stay locked to the characters instead of inheriting
-the sound server's per-write scheduling jitter. If no sound server is
-reachable, the message still goes up and the failure is reported on stderr.
+Audio and animation share character timings. Tracks are mixed before display
+and played through PulseAudio; the untype track is delayed until vanish starts.
+Audio failures are reported on stderr and the message still displays.
 
 ## Development
 
@@ -373,30 +259,16 @@ nix develop
 cargo fmt --all --check
 cargo clippy --all-targets --locked -- -D warnings
 cargo test --locked
-cargo deny check advisories sources           # RustSec, and source pinning
-cargo machete                                 # dependencies nothing imports
-groff -man -Tutf8 -ww -z man/man1/wayhud.1    # man page lint
+cargo deny check advisories sources
+cargo machete
+groff -man -Tutf8 -ww -z man/man1/wayhud.1
 groff -man -Tutf8 -ww -z man/man5/wayhud.5
-nix build                                     # what `nix run github:…` does
+nix build
 ```
 
-That is the whole of CI, in the same order and with the same flags. `--locked`
-matters: without it cargo may update the committed lockfile, and a build that
-did is not the build CI checked. `nix build` is worth running before a push —
-it compiles the flake and runs the suite a second time in a sandbox with no
-network and no `$HOME`, which is where a test that quietly depended on either
-finally says so.
-
-Install the pre-commit hook once per clone — it lints the index, not the
-working tree:
-
-```sh
-git config core.hooksPath hooks
-```
-
-`CLAUDE.md` records the non-obvious constraints (why the text is drawn by hand
-instead of with a `GtkLabel`, why there is no `GtkApplication`, why the window
-is sized from the full text). Worth reading before changing the rendering path.
+Install the hook with `git config core.hooksPath hooks`; it checks the staged
+tree. CI also checks the declared Rust version and builds on aarch64.
+[CLAUDE.md](CLAUDE.md) lists development commands and rendering constraints.
 
 ## License
 

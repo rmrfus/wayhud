@@ -5,9 +5,6 @@ on:
     tags:
       - 'v*'
 
-# Read at the top level. The one job that has to create a release widens it
-# for itself; a blanket write because a single step needed it is the failure
-# this arrangement exists to prevent.
 permissions:
   contents: read
 
@@ -20,9 +17,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          # The tag object itself, not just the commit: --notes-from-tag reads
-          # the annotation out of the local repository, and a shallow checkout
-          # does not carry it.
+          # Fetch tag annotations for --notes-from-tag.
           fetch-depth: 0
 
       - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31
@@ -30,24 +25,16 @@ jobs:
           extra_nix_config: |
             experimental-features = nix-command flakes
 
-      # No prebuilt binaries here on purpose: wayhud links dynamically against
-      # GTK4 and gtk4-layer-shell, so a binary built on this runner would only
-      # run on a host with the same library versions. `nix run` builds against
-      # the consumer's own nixpkgs instead. This job just proves the tag builds
-      # before the release goes out.
+      # Verify the tag builds. Binaries depend on host GTK and layer-shell libraries;
+      # installation is through Nix or a source build.
       - name: Verify the tag builds
         run: nix build
 
-      # Notes come from the annotated tag. --generate-notes produces just a
-      # "Full Changelog" link on a repository whose commits land on main
-      # without pull requests, and gh refuses to combine the two flags, so the
-      # tag message is where the release notes live. Tag with `git tag -a`.
+      # Release notes come from the annotated tag; create it with git tag -a.
       - name: Publish
         run: |
           gh release delete "${GITHUB_REF_NAME}" --yes --repo "${GITHUB_REPOSITORY}" 2>/dev/null || true
-          # No --repo here: gh refuses to combine it with --notes-from-tag,
-          # since the annotation is read locally. The checkout above is the
-          # repository context.
+          # --notes-from-tag requires local repository context and cannot use --repo.
           gh release create "${GITHUB_REF_NAME}" \
             --title "${GITHUB_REF_NAME}" \
             --notes-from-tag

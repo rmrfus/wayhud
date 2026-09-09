@@ -1,10 +1,4 @@
-//! Typewriter audio.
-//!
-//! The whole track is mixed up front and handed to PulseAudio in one write,
-//! rather than firing a blip per keystroke. We already know the text and the
-//! typing speed before the first frame, so the onsets are exact; per-character
-//! playback would inherit the server's scheduling jitter on every single tick
-//! and drift audibly against the animation over a long line.
+//! Typewriter audio mixed into one track to avoid per-write scheduling jitter.
 
 use anyhow::Result;
 
@@ -13,11 +7,7 @@ use crate::synth::{Params, render_f64};
 
 const RATE: u32 = 48_000;
 
-/// Longest track we will mix, in seconds. The buffer is sized from the last
-/// onset, so this is the difference between a bad number reaching us and an
-/// abort: an hour of f64 samples is 1.4 GB, and `--reveal 'cps=1e-9'` asked
-/// for 768 TB. Callers bound the message lifetime too; this is the backstop that
-/// does not depend on them getting it right.
+/// Maximum track duration in seconds; bounds allocation from onset times.
 const MAX_TRACK_S: f64 = 120.0;
 
 /// Mix one blip in at each onset (seconds) and quantise to mono i16.
@@ -39,9 +29,7 @@ pub fn typewriter_track(cfg: &Sound, onsets: &[f64]) -> Vec<i16> {
         return Vec::new();
     }
 
-    // Drop anything non-finite or beyond the cap rather than sizing a buffer
-    // from it. A blip nobody would still be around to hear is not worth an
-    // out-of-memory abort.
+    // Discard non-finite and out-of-range onsets before allocating.
     let onsets: Vec<f64> = onsets
         .iter()
         .copied()
@@ -56,9 +44,7 @@ pub fn typewriter_track(cfg: &Sound, onsets: &[f64]) -> Vec<i16> {
     for &t in &onsets {
         let start = (t.max(0.0) * RATE as f64).round() as usize;
         for (i, v) in blip.iter().enumerate() {
-            // Overlapping tails simply sum; the clamp below is the only
-            // limiter. At the default gain two overlapping blips stay inside
-            // full scale, and a config that clips is a config, not a crash.
+            // Overlapping tails sum; clamp before i16 conversion.
             acc[start + i] += v;
         }
     }
@@ -67,13 +53,9 @@ pub fn typewriter_track(cfg: &Sound, onsets: &[f64]) -> Vec<i16> {
         .collect()
 }
 
-/// Play the track on a detached thread, optionally after a delay. Audio
-/// failures are reported and then dropped: no sound server is a reason to be
-/// quiet, not a reason to skip the message the user asked to see.
-///
-/// The delay exists so a long hold costs nothing: mixing the untype blips into
-/// one track that starts at t0 would allocate silence for the whole timeout,
-/// and `--timeout 3600` alone would be a gigabyte of zeroes.
+/// Play on a worker thread after an optional delay. Return its join handle.
+/// Report audio failures without preventing display. Delaying playback avoids
+/// allocating silence for the hold before an untype vanish.
 #[must_use = "join the handle before exiting or the tail is cut off"]
 pub fn play_detached(
     pcm: Vec<i16>,
@@ -143,15 +125,14 @@ mod tests {
     #[test]
     fn track_spans_the_last_onset_plus_the_blip_tail() {
         let t = typewriter_track(&cfg(), &[0.0, 1.0]);
-        // Must reach at least 1 s + the blip, and must not be silent.
+
         assert!(t.len() > RATE as usize, "track too short: {}", t.len());
         assert!(t.iter().any(|&s| s != 0));
     }
 
     #[test]
     fn overlapping_onsets_stay_inside_full_scale() {
-        // Ten blips stacked on the same instant would sum way past 1.0 without
-        // the clamp; i16 wrapping there is an audible bang, not a click.
+        // Overlapping blips must saturate without i16 wrapping.
         let onsets = vec![0.0_f64; 10];
         let t = typewriter_track(&cfg(), &onsets);
         assert!(t.iter().all(|&s| s.abs() as i32 <= 32767));
@@ -165,10 +146,10 @@ mod tests {
 
     #[test]
     fn absurd_onsets_do_not_size_the_buffer() {
-        // A cps of 1e-9 reached here and asked for 768 TB.
+        // Reject onsets that would require excessive allocation.
         let t = typewriter_track(&cfg(), &[1e12]);
         assert!(t.is_empty(), "an out-of-range onset must be dropped");
-        // A sane onset alongside it still plays.
+
         let t = typewriter_track(&cfg(), &[0.1, 1e12]);
         assert!(!t.is_empty());
         assert!(t.len() < (MAX_TRACK_S as usize + 1) * RATE as usize);

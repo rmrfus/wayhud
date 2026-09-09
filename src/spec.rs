@@ -1,31 +1,10 @@
-//! The `key=value` flag grammar, shared by every flag that stands for a config
-//! table.
-//!
-//! One shape everywhere: an optional bare value first, then comma-separated
-//! `key=value` pairs, with the keys spelled exactly as the TOML keys are.
-//! `--glow '#b8bb26,radius=12'` and `glow = { color = "#b8bb26", radius = 12 }`
-//! are the same words in the same order, which is the point — the command line
-//! and the config file are one vocabulary rather than two that have to be
-//! learned separately.
-//!
-//! The bare value is the field a flag is usually about: the colour for
-//! `--glow`, the kind for `--vanish`. It has to come first, because anywhere
-//! else there is no way to tell it from a pair whose key was forgotten.
-//!
-//! Unknown keys are refused with the list of known ones, the way
-//! `deny_unknown_fields` refuses them in the config file. A flag that quietly
-//! ignores half of what it was handed is how a keybinding ends up lying about
-//! what it does.
+//! CLI specs: an optional leading bare value followed by comma-separated
+//! `key=value` fields. Unknown and duplicate fields are rejected.
 
 use anyhow::Result;
 
-/// Split on the commas that separate fields, leaving alone the ones inside
-/// brackets.
-///
-/// GTK takes `rgb(184, 187, 38)` wherever it takes a colour, and those commas
-/// are part of the value. Splitting on every comma cut that into three fields,
-/// two of which had no key — a colour that worked before 1.0, when the
-/// separator was a colon, and would have started failing without this.
+/// Split fields at commas outside brackets, preserving CSS values such as
+/// `rgb(184, 187, 38)`.
 fn split_fields(spec: &str) -> Vec<&str> {
     let mut out = Vec::new();
     let mut depth = 0usize;
@@ -45,18 +24,8 @@ fn split_fields(spec: &str) -> Vec<&str> {
     out
 }
 
-/// A parsed spec, emptied field by field and then checked for leftovers.
-///
-/// Taking rather than reading is what lets `finish` be honest: a key nobody
-/// asked for is still sitting in `pairs` at the end, and that is exactly the
-/// typo worth reporting.
-///
-/// `asked` records every key the caller looked for, present or not, so the
-/// "want ..." list in that complaint is built from what the flag actually
-/// accepts rather than from a literal kept beside it. Those two drifted apart
-/// the first time they were written down separately: a field the caller forgot
-/// to take was reported as unknown while being listed as known in the same
-/// sentence.
+/// Parsed fields are consumed by callers; `finish` rejects leftovers.
+/// `asked` tracks supported keys for error messages.
 #[derive(Debug)]
 pub struct Spec<'a> {
     flag: &'static str,
@@ -91,15 +60,10 @@ impl<'a> Spec<'a> {
                     );
                     pairs.push((key, value));
                 }
-                // A bare value later in the list is a key someone forgot to
-                // type, not a second bare value: say so rather than silently
-                // overwrite the first one.
+                // Only the first field may omit its key.
                 None => {
-                    // A colon where a comma belongs is the pre-1.0 spelling,
-                    // which parsed as `colour:size`. Left alone it reaches the
-                    // colour parser as one string and comes back "can't parse
-                    // RGBA", which tells someone with an old keybinding
-                    // nothing about what changed.
+                    // Report the pre-1.0 colon separator before it reaches the
+                    // colour parser.
                     anyhow::ensure!(
                         !item.contains(':'),
                         "{flag}: {item:?} looks like the old colon form; \
@@ -128,8 +92,7 @@ impl<'a> Spec<'a> {
     }
 
     pub fn take(&mut self, key: &'static str) -> Option<&'a str> {
-        // Recorded whether or not it is there: asking is what makes a field
-        // part of this flag's vocabulary.
+        // Record supported keys even when absent from the spec.
         if !self.asked.contains(&key) {
             self.asked.push(key);
         }
@@ -137,8 +100,7 @@ impl<'a> Spec<'a> {
         Some(self.pairs.remove(i).1)
     }
 
-    /// One method for every number in the grammar, so `f64`, `u64` and `usize`
-    /// cannot drift into three spellings of the same complaint.
+    /// Parse numeric fields with a common error format.
     pub fn take_parsed<T>(&mut self, key: &'static str) -> Result<Option<T>>
     where
         T: std::str::FromStr,
@@ -167,9 +129,7 @@ impl<'a> Spec<'a> {
         }
     }
 
-    /// Refuse anything left over, listing what this flag does take — the same
-    /// answer a typo gets from the config file, where `deny_unknown_fields`
-    /// refuses it at load time.
+    /// Reject unconsumed fields and list supported keys.
     pub fn finish(self) -> Result<()> {
         if let Some((key, _)) = self.pairs.first() {
             anyhow::bail!(
@@ -181,12 +141,8 @@ impl<'a> Spec<'a> {
         Ok(())
     }
 
-    /// The flag's headline field — the colour for `--glow`, the kind for
-    /// `--vanish` — however it was written: bare, or by name.
-    ///
-    /// Both at once is refused rather than resolved. There is no reading of
-    /// `--glow '#fff,color=#000'` that is not someone editing a keybinding and
-    /// leaving half the old one behind.
+    /// Read the primary field by name or as the leading bare value.
+    /// Reject specs that supply both.
     pub fn headline(&mut self, key: &'static str) -> Result<Option<&'a str>> {
         let named = self.take(key);
         match (self.bare, named) {
@@ -245,7 +201,6 @@ mod tests {
 
     #[test]
     fn whitespace_around_fields_is_not_a_typo() {
-        // Quoting a spec in a shell makes spaces easy to leave in.
         let mut s = spec(" #fff , radius = 12 ").unwrap();
         assert_eq!(s.bare(), Some("#fff"));
         assert_eq!(s.take_parsed::<f64>("radius").unwrap(), Some(12.0));
@@ -254,8 +209,7 @@ mod tests {
     #[test]
     fn an_unknown_field_is_refused_with_the_ones_that_exist() {
         let mut s = spec("radius=12,radius_px=4").unwrap();
-        // Exactly what a flag does: ask for each field it supports, whether or
-        // not this spec mentioned it.
+
         let _ = s.take("color");
         let _ = s.take_parsed::<f64>("radius").unwrap();
         let _ = s.take_parsed::<f64>("alpha").unwrap();
@@ -276,10 +230,7 @@ mod tests {
 
     #[test]
     fn the_wanted_list_cannot_contradict_itself() {
-        // The bug this replaces: `finish` took the known names as a literal of
-        // their own, so a field the caller forgot to take was reported as
-        // unknown AND listed as wanted in the same sentence. Built from what
-        // was asked for, the list can no longer say both.
+        // Supported names must come from the fields the caller consumes.
         let mut s = spec("radius=12").unwrap();
         let _ = s.take("color");
         let err = format!("{:#}", s.finish().unwrap_err());
@@ -292,8 +243,6 @@ mod tests {
 
     #[test]
     fn a_bare_value_must_come_first() {
-        // Otherwise it is a key someone forgot to type, and guessing which
-        // field it meant is worse than saying so.
         let err = format!("{:#}", spec("radius=12,#fff").unwrap_err());
         assert!(err.contains("only the first value may be bare"), "{err}");
     }
@@ -339,22 +288,19 @@ mod tests {
 
     #[test]
     fn a_colour_with_commas_in_it_stays_one_field() {
-        // GTK takes rgb(...) wherever it takes a colour, and those commas are
-        // part of the value, not field separators.
+        // CSS function arguments are part of the colour value.
         let mut s = spec("rgb(184, 187, 38),radius=4").unwrap();
         assert_eq!(s.headline("color").unwrap(), Some("rgb(184, 187, 38)"));
         assert_eq!(s.take_parsed::<f64>("radius").unwrap(), Some(4.0));
         s.finish().unwrap();
 
-        // And by name, where the value is the part after the first =.
         let mut s = spec("color=rgba(1,2,3,0.5)").unwrap();
         assert_eq!(s.headline("color").unwrap(), Some("rgba(1,2,3,0.5)"));
     }
 
     #[test]
     fn the_old_colon_form_says_what_replaced_it() {
-        // Someone with a pre-1.0 keybinding gets told the separator changed,
-        // rather than "can't parse RGBA" from three layers down.
+        // Report obsolete separators directly.
         let err = format!("{:#}", spec("#b8bb26:12").unwrap_err());
         assert!(err.contains("old colon form"), "{err}");
         let err = format!("{:#}", spec("fade:250").unwrap_err());
@@ -382,16 +328,14 @@ mod tests {
 
     #[test]
     fn a_spec_with_no_headline_leaves_it_unset() {
-        // How "change only the radius" works: nothing was said about the
-        // colour, so the caller keeps the preset's.
+        // An omitted colour leaves it to the caller to preserve the preset.
         let mut s = spec("radius=12").unwrap();
         assert_eq!(s.headline("color").unwrap(), None);
     }
 
     #[test]
     fn a_missing_field_is_none_rather_than_an_error() {
-        // The contract every flag relies on: what the spec does not mention
-        // is inherited from the preset instead of reset.
+        // Omitted fields must remain available for inheritance.
         let mut s = spec("radius=12").unwrap();
         assert_eq!(s.take_parsed::<f64>("alpha").unwrap(), None);
         assert_eq!(s.take_bool("cursor").unwrap(), None);

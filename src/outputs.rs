@@ -1,9 +1,5 @@
-//! Which monitors a message lands on.
-//!
-//! Wayland deliberately gives a client no way to ask "which output has the
-//! focus" — that is compositor policy, not protocol. So `Current` goes out to
-//! sway over its IPC socket and matches the answer back to a `gdk::Monitor` by
-//! connector name (`DP-4`), which is the one identifier both sides agree on.
+//! Output selection. `current` queries sway IPC and matches GDK monitors
+//! by connector name.
 
 use anyhow::{Result, anyhow};
 use gtk::gdk;
@@ -45,9 +41,7 @@ fn all_monitors(display: &gdk::Display) -> Vec<gdk::Monitor> {
         .collect()
 }
 
-/// Ask sway which output is focused. Errors (no `SWAYSOCK`, socket refused)
-/// propagate — the caller decides whether to degrade or give up, because
-/// "silently used the wrong monitor" is the one outcome nobody wants.
+/// Query the focused output through sway IPC, propagating connection errors.
 fn sway_focused_output() -> Result<String> {
     let mut conn = swayipc::Connection::new()?;
     conn.get_outputs()?
@@ -57,11 +51,8 @@ fn sway_focused_output() -> Result<String> {
         .ok_or_else(|| anyhow!("sway reports no focused output"))
 }
 
-/// Resolve a spec against the live display.
-///
-/// A name that matches nothing is reported but not fatal, so
-/// `--output DP-3,DP-9` still shows up on DP-3 when DP-9 is unplugged. An
-/// empty result IS fatal: showing a HUD on no screen at all is a silent no-op.
+/// Resolve against the live display. Report and skip missing connectors;
+/// return an error if none match.
 pub fn resolve(display: &gdk::Display, spec: &OutputSpec) -> Result<Vec<gdk::Monitor>> {
     let monitors = all_monitors(display);
     if monitors.is_empty() {

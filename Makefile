@@ -1,11 +1,6 @@
-# Installing wayhud on a box without nix.
+# Build and install the binary and man pages. Supports PREFIX and DESTDIR.
 #
-# `cargo install` copies binaries and nothing else — no man pages, no data
-# files — so the rest needs a rule of its own. Everything here honours the
-# usual PREFIX and DESTDIR, which is the language an AUR or Debian packager
-# already speaks.
-#
-#   make && sudo make install                 # /usr/local
+#   make && sudo make install
 #   make && make install PREFIX="$HOME/.local"
 #   make install DESTDIR="$pkgdir" PREFIX=/usr
 
@@ -25,8 +20,7 @@ all: build
 build:
 	$(CARGO) build --release --locked
 
-# Deliberately not dependent on `build`: this is the target run under sudo,
-# and rebuilding as root leaves target/ owned by root for the rest of time.
+# Build separately so sudo install cannot leave root-owned build artifacts.
 install:
 	@test -x '$(BIN)' || { echo 'wayhud: $(BIN) is missing — run `make` first' >&2; exit 1; }
 	$(INSTALL) -Dm755 $(BIN)            $(DESTDIR)$(BINDIR)/wayhud

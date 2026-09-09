@@ -5,23 +5,16 @@ on:
     branches: [main]
   pull_request:
 
-# Read at the top level; nothing here writes. A job that needs more says so
-# itself rather than the whole workflow being widened for one step.
 permissions:
   contents: read
 
 jobs:
   check:
-    # Built through nix rather than rustup: this links against GTK4,
-    # gtk4-layer-shell and libpulse, and the flake is the only place those are
-    # pinned to versions known to work together. It also means CI compiles the
-    # same way a user running `nix run github:rmrfus/wayhud` does.
+    # Use the flake's pinned Rust toolchain and native libraries.
     name: fmt · clippy · test · package
     runs-on: ubuntu-latest
     steps:
-      # Actions are pinned to a commit, not a tag: a tag is mutable, and in the
-      # tj-actions/changed-files compromise (CVE-2025-30066) every tag was
-      # repointed at a commit that dumped CI secrets into the logs.
+      # Pin actions to immutable commits.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31
@@ -43,43 +36,25 @@ jobs:
           nix develop --command groff -man -Tutf8 -ww -z man/man1/wayhud.1
           nix develop --command groff -man -Tutf8 -ww -z man/man5/wayhud.5
 
-      # Both checks, not just advisories: the [sources] section in deny.toml is
-      # only read by `check sources`, so listing advisories alone would leave
-      # unknown-git = "deny" as configuration nothing ever runs.
+      # Include sources to enforce deny.toml's unknown-git policy.
       - name: Advisories and sources
         run: nix develop --command cargo deny check advisories sources
 
-      # A dependency nothing imports is not a crash; it keeps appearing in the
-      # advisory scan above for code that is no longer called, and can hold the
-      # MSRV higher than our own source needs.
       - name: Unused dependencies
         run: nix develop --command cargo machete
 
-      # Not just a local convenience: without this the flake rots quietly and
-      # the breakage lands on whoever first runs `nix run github:rmrfus/wayhud`.
-      # It also runs the suite a second time under buildRustPackage's doCheck,
-      # in a sandbox with no network and no $HOME.
+      # Build the package and run tests in the Nix sandbox.
       - name: Package
         run: nix build
 
   msrv:
-    # rust-version is otherwise a claim nothing checks: the devshell ships
-    # whatever nixpkgs pins (1.97 at the time of writing), so a declared floor
-    # would stay green for months and break the first stranger running
-    # `cargo install --locked`. clippy's incompatible_msrv covers library items
-    # against the floor, but not language features — the let-chain in
-    # Config::merged is 1.88 and it says nothing about it.
+    # Check the minimum compiler version independently of the devshell toolchain.
     name: MSRV
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
-      # Read the floor out of Cargo.toml rather than repeating it here. Hard
-      # coding it means raising rust-version leaves this job compiling on the
-      # old toolchain — still green, now verifying a floor the crate no longer
-      # claims, with nothing to report that. Deriving it removes the coupling
-      # instead of documenting it. An empty result fails the next step outright:
-      # `toolchain` is a required input and this action carries no default.
+      # Read the required version from Cargo.toml.
       - name: Read the declared floor
         id: floor
         run: |
@@ -96,18 +71,14 @@ jobs:
           extra_nix_config: |
             experimental-features = nix-command flakes
 
-      # The C libraries come from the devshell, the compiler from rustup: nix
-      # has no historical rustc and rustup cannot supply gtk4-layer-shell.
+      # Use native libraries from Nix and the requested compiler from rustup.
       - name: Check on the declared floor
         run: |
           nix develop --command rustup run "${{ steps.floor.outputs.version }}" \
             cargo check --all-targets --locked
 
   aarch64:
-    # The flake claims aarch64-linux in `systems`, which is an unverified
-    # promise until something builds it. A native runner rather than pkgsCross:
-    # cross-compiling GTK4, pango and glibc has no binary cache behind it and
-    # would build the world, while cache.nixos.org does carry aarch64-linux.
+    # Use a native ARM runner and cached aarch64 packages.
     name: aarch64
     runs-on: ubuntu-24.04-arm
     steps:

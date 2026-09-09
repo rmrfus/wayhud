@@ -1,15 +1,12 @@
 #!/usr/bin/env bash
-# Lint what is actually being committed, not the working tree: a staged hunk
-# that fails clippy would otherwise sail through because the unstaged fix is
-# still sitting on disk.
+# Check the staged tree.
 set -Eeuo pipefail
 
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 
 git checkout-index --all --prefix="$work/"
-# Cargo needs the lockfile and the build cache; symlink target/ rather than
-# rebuilding the world on every commit.
+# Reuse the local build cache.
 [[ -d target ]] && ln -s "$PWD/target" "$work/target"
 
 cd "$work"

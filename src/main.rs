@@ -1,8 +1,5 @@
-//! wayhud — a layer-shell text overlay for sway.
-//!
-//! One shot by design: the process shows a message, waits it out, exits. Two
-//! concurrent invocations are two processes and two layer surfaces, which the
-//! compositor stacks — that is the documented behaviour, not an oversight.
+//! One-shot layer-shell text overlay for sway. Each invocation creates
+//! independent surfaces and exits after its message finishes.
 
 mod config;
 mod hud;
@@ -34,7 +31,7 @@ use spec::Spec;
 #[derive(Parser, Debug)]
 #[command(
     name = "wayhud",
-    // Straight from Cargo.toml, so the flag cannot drift from the package.
+
     version,
     about = "Show a heads-up message over everything on sway",
     long_about = None
@@ -47,7 +44,7 @@ struct Cli {
     #[arg(short, long, default_value = "current")]
     output: String,
 
-    /// Hold time in seconds, measured from the END of the reveal.
+    /// Hold time in seconds, measured from the end of the reveal.
     #[arg(short, long)]
     timeout: Option<f64>,
 
@@ -68,9 +65,8 @@ struct Cli {
     #[arg(long)]
     outline: Option<String>,
 
-    /// Halo behind the glyphs, painted under the outline rather than instead
-    /// of it: a colour, or "none". Takes radius=PX and alpha=0..1.
-    /// E.g. "#b8bb26,radius=12,alpha=0.7".
+    /// Glow colour, or "none". Takes radius=PX and alpha=0..1. E.g.
+    /// "#b8bb26,radius=12,alpha=0.7".
     #[arg(long)]
     glow: Option<String>,
 
@@ -78,7 +74,8 @@ struct Cli {
     #[arg(long)]
     position: Option<String>,
 
-    /// Gap from the anchored edge, in logical pixels. A centred axis ignores it.
+    /// Gap from the anchored edge, in logical pixels. A centred axis ignores
+    /// it.
     #[arg(long)]
     margin: Option<i32>,
 
@@ -97,8 +94,8 @@ struct Cli {
     #[arg(long)]
     vanish: Option<String>,
 
-    /// The typewriter blip: "on", "off", or the knobs freq=, decay_ms=,
-    /// gain= and every=. E.g. "freq=1800,gain=0.3".
+    /// Typewriter sound: "on", "off", or freq=, decay_ms=, gain= and every=.
+    /// E.g. "freq=1800,gain=0.3".
     #[arg(long)]
     sound: Option<String>,
 
@@ -129,22 +126,18 @@ fn run() -> Result<ExitCode> {
     let cfg = Config::load(cli.config.clone())?;
     let mut style = cfg.style(&cli.style)?;
     apply_overrides(&mut style, &cli)?;
-    // The same ranges the config file is held to. Without this the flags would
-    // each have to restate them, which is how a bound ends up enforced on one
-    // path and not the other.
+    // Validate the resolved style after applying CLI overrides.
     style
         .validate()
         .context("in the style built from the command line")?;
 
-    // Jitter is seeded from the clock so repeated messages do not stutter in
-    // the same places; tests pass their own seed.
+    // Use a fresh jitter seed for each invocation.
     let seed = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos() as u64)
         .unwrap_or(0x5bd1_e995);
     let hud = Rc::new(Hud::new(style, text, seed)?);
-    // reveal + hold + vanish, so a tiny --reveal cps= strands the overlay no
-    // more than a huge --timeout does.
+    // Limit the total reveal, hold and vanish duration.
     let total = hud.timeline.total_ms();
     anyhow::ensure!(
         total.is_finite() && total <= MAX_LIFETIME_MS as f64,
@@ -154,23 +147,17 @@ fn run() -> Result<ExitCode> {
         MAX_LIFETIME_MS / 1000
     );
 
-    // Render the whole blip track before the GUI exists: it depends only on
-    // the text and the typing speed, and doing it here keeps the first frame
-    // from stalling on synthesis.
+    // Mix before GUI setup to avoid delaying the first frame.
     let cfg = &hud.style.sound;
     let reveal_pcm = sound::typewriter_track(cfg, &hud.timeline.onsets(cfg.every));
-    // Untype clicks its way back out; every other vanish is silent. It is a
-    // separate track played after a delay, rather than one track starting at
-    // t0: mixing it in would allocate silence for the whole hold, so
-    // `--timeout 3600` would cost a gigabyte of zeroes.
+    // Delay the separate untype track to avoid allocating silence during the
+    // hold.
     let vanish_pcm = sound::typewriter_track(cfg, &hud.timeline.vanish_onsets(cfg.every));
     let vanish_delay = Duration::from_secs_f64(hud.timeline.vanish_start().max(0.0));
     let tracks = RefCell::new(Some((reveal_pcm, vanish_pcm)));
-    // Held so the process can wait for playback instead of killing it on the
-    // way out: the last untype blip starts on the very frame the window
-    // closes, and PulseAudio drops whatever has not been played.
+    // Wait for playback on exit so the final untype blip can finish.
     let playing: Rc<RefCell<Vec<std::thread::JoinHandle<()>>>> = Rc::new(RefCell::new(Vec::new()));
-    // take() makes this fire exactly once no matter how many windows call it.
+    // `take()` starts playback once across all windows.
     let on_first_frame: Rc<dyn Fn()> = Rc::new({
         let playing = playing.clone();
         move || {
@@ -188,8 +175,7 @@ fn run() -> Result<ExitCode> {
     let display = gtk::gdk::Display::default().context("no display")?;
     let monitors = outputs::resolve(&display, &spec)?;
 
-    // Exit once the last overlay is gone. Counting windows rather than
-    // trusting a single timer keeps the loop honest if one output is slower.
+    // Exit after the last overlay closes.
     let main_loop = glib::MainLoop::new(None, false);
     let alive = Rc::new(Cell::new(monitors.len()));
     for monitor in monitors {
@@ -213,14 +199,9 @@ fn run() -> Result<ExitCode> {
 
 fn load_css() {
     let provider = gtk::CssProvider::new();
-    // The overlay must not paint the theme's window background over the
-    // screen; only the glyphs are ours to draw.
+    // Keep the window background transparent.
     provider.load_from_string("window.wayhud { background: transparent; }");
-    // The display takes its own reference to the provider, which is why this
-    // local can die at the end of the function and the rule still applies for
-    // the life of the process. Both are refcounted GObjects, so the order the
-    // two are dropped in carries no meaning — worth knowing, because the
-    // edition 2024 migration lint flags exactly that order changing here.
+    // The display retains its own reference to the CSS provider.
     if let Some(display) = gtk::gdk::Display::default() {
         gtk::style_context_add_provider_for_display(
             &display,
@@ -230,24 +211,16 @@ fn load_css() {
     }
 }
 
-/// Read a message from `r`, stopping before an endless stream fills memory.
-///
-/// `Read::take` bounds bytes while the cap counts characters, so the budget is
-/// the cap's worst case in UTF-8 plus one: MAX_TEXT_CHARS characters occupy at
-/// most four times as many bytes, so one byte past that proves the message is
-/// over the limit whatever it encodes. Stopping there is the whole point — a
-/// character count can only speak once the stream is already resident, which
-/// is too late for a pipe that never ends.
+/// Read at most four bytes per allowed character plus one overflow byte.
+/// This bounds memory before UTF-8 decoding and character counting.
 fn read_capped(r: impl Read) -> Result<String> {
     const BUDGET: u64 = MAX_TEXT_CHARS as u64 * 4 + 1;
     let mut bytes = Vec::new();
     r.take(BUDGET)
         .read_to_end(&mut bytes)
         .context("reading stdin")?;
-    // Filling the budget means the input did not end inside it. This has to
-    // answer before the conversion below, not after: a tail cut at an
-    // arbitrary byte need not be valid UTF-8, and "not valid UTF-8" is the
-    // wrong thing to tell someone whose only mistake was piping too much.
+    // Check overflow before decoding: a truncated tail may split a UTF-8
+    // character.
     anyhow::ensure!(
         (bytes.len() as u64) < BUDGET,
         "message is longer than the maximum of {MAX_TEXT_CHARS} characters"
@@ -257,10 +230,7 @@ fn read_capped(r: impl Read) -> Result<String> {
 
 /// Text comes from argv, or from stdin when argv is empty or "-".
 fn read_text(cli: &Cli) -> Result<String> {
-    // Only argv gets unescaped. Text piped in already carries real newlines,
-    // and mangling a backslash out of a log line would be rude. Filtering the
-    // Option here rather than testing a flag and unwrapping keeps the "argv
-    // holds a message" case a single binding that cannot be None.
+    // Expand escapes only in argv; preserve piped text.
     let text = if let Some(raw) = cli.text.as_deref().filter(|t| *t != "-") {
         if cli.raw {
             raw.to_string()
@@ -273,19 +243,10 @@ fn read_text(cli: &Cli) -> Result<String> {
         }
         read_capped(std::io::stdin())?
     };
-    // Whichever way the text arrived. Pango turns a trailing newline into an
-    // empty final line and counts it in the layout height, so the surface ends
-    // up a line taller than anything visible: the compositor centres that
-    // phantom along with the text and the whole message sits half a line off.
-    // The caret then finishes the reveal parked at x=0 on that empty line,
-    // adrift from the message it belongs to.
-    //
-    // Trimming only the piped side, which is what this did, made
-    // `wayhud "a\n"` and `printf 'a\n' | wayhud` render differently for no
-    // reason a user could see.
+    // Trim trailing newlines on both input paths to avoid an empty Pango line
+    // that changes the surface height and final caret position.
     let text = text.trim_end_matches('\n');
-    // Bound the text itself, not just its lifetime: the check in run() fires
-    // after the step table and the layout are already allocated.
+    // Check the character limit before allocating layout and timing data.
     let count = text.chars().count();
     anyhow::ensure!(
         count <= MAX_TEXT_CHARS,
@@ -294,9 +255,8 @@ fn read_text(cli: &Cli) -> Result<String> {
     Ok(text.to_string())
 }
 
-/// Expand the escapes the shell won't. sway runs `exec` through `sh`, which
-/// has no `$'...'`, so a keybinding has no other way to say "second line".
-/// An unknown escape is left alone rather than swallowed.
+/// Expand escapes for sway bindings executed through `sh`.
+/// Preserve unknown escapes.
 fn unescape(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut it = s.chars();
@@ -319,13 +279,8 @@ fn unescape(s: &str) -> String {
     out
 }
 
-/// Lay the command line over a resolved preset.
-///
-/// Every flag reads the style it is overriding, so a spec states only what it
-/// changes: `--glow 'radius=20'` keeps the preset's colour and alpha. Ranges
-/// are not checked here — `run` validates the finished style with the same
-/// code the config file goes through, so a bound cannot hold in one place and
-/// not the other.
+/// Apply CLI fields over the preset, preserving omitted values.
+/// `run` validates the resulting style.
 fn apply_overrides(style: &mut Style, cli: &Cli) -> Result<()> {
     if let Some(f) = &cli.font {
         style.font = f.clone();
@@ -342,9 +297,8 @@ fn apply_overrides(style: &mut Style, cli: &Cli) -> Result<()> {
         style.glow = parse_glow(g, style.glow.as_ref())?;
     }
     if let Some(t) = cli.timeout {
-        // Checked here rather than left to `validate`: seconds are this flag's
-        // own unit, and a negative one saturates to 0 on the way to
-        // `timeout_ms` instead of arriving as something to complain about.
+        // Validate seconds before conversion to u64, which would saturate
+        // negatives to zero.
         let max_s = MAX_LIFETIME_MS as f64 / 1000.0;
         anyhow::ensure!(
             (0.0..=max_s).contains(&t),
@@ -375,11 +329,7 @@ fn apply_overrides(style: &mut Style, cli: &Cli) -> Result<()> {
     Ok(())
 }
 
-/// `bottom-left`, `center`, or `halign=left,valign=bottom`.
-///
-/// A bare word still names BOTH axes: `bottom` is bottom-centre, not "bottom
-/// and whatever the preset said". Keeping the other axis would make the same
-/// flag mean different things depending on which preset it was used with.
+/// Parse placement. A bare name sets both axes; named fields set one each.
 fn parse_position(spec: &str, style: &Style) -> Result<(HAlign, VAlign)> {
     let mut s = Spec::parse("--position", spec)?;
     let (mut halign, mut valign) = match s.bare() {
@@ -403,10 +353,7 @@ fn parse_position_word(word: &str) -> Result<(HAlign, VAlign)> {
     for part in word.split('-') {
         match part {
             "center" => {}
-            // Taken before 1.0, when the flag had a vocabulary of its own; the
-            // config file never took it. Refusing it keeps the two spellings
-            // from diverging again, but the answer has to be the word to type
-            // rather than a list of five in which one differs by a letter.
+            // Suggest the current spelling for the pre-1.0 alias.
             "centre" => anyhow::bail!(
                 "--position: spelled \"center\" here, the way the config file \
                  spells it"
@@ -459,11 +406,7 @@ fn parse_dir(v: &str) -> Result<Dir> {
     })
 }
 
-/// `#1d2021`, `#1d2021,width=5`, `none`.
-///
-/// Returns `(colour, width)`. A field the spec does not mention keeps the
-/// preset's value, which is what lets a colour be tried without restating the
-/// geometry — the contract every one of these flags shares.
+/// Parse outline colour and width, preserving omitted preset fields.
 fn parse_outline(
     spec: &str,
     current_colour: Option<&str>,
@@ -474,19 +417,15 @@ fn parse_outline(
     let width = s.take_parsed::<f64>("width")?;
     s.finish()?;
     if colour == Some("none") {
-        // There is no stroke to size, so a width here is a typo rather than a
-        // setting. Bare "none" still carries the configured width through
-        // untouched, for a preset that switches the outline back on.
+        // Reject width with `none`; preserve the configured width when
+        // disabling alone.
         anyhow::ensure!(
             width.is_none(),
             "--outline none takes no width; there is no stroke to size"
         );
         return Ok((None, current_width));
     }
-    // The preset's colour has to be passed in, because `None` here would
-    // otherwise mean both "no outline" and "nothing was said about it" —
-    // and `--outline 'width=2'` would switch the stroke off while claiming
-    // to resize it.
+    // Preserve the preset colour when only width is specified.
     Ok((
         colour.map_or_else(
             || current_colour.map(str::to_string),
@@ -510,9 +449,7 @@ fn parse_glow(spec: &str, current: Option<&Glow>) -> Result<Option<Glow>> {
         );
         return Ok(None);
     }
-    // Falling back to the compiled default rather than refusing means
-    // `--glow 'radius=20'` over a preset with no halo turns one on at the
-    // default colour, instead of naming a colour to change a radius.
+    // Use glow defaults when enabling a halo through a field-only spec.
     let base = current.cloned().unwrap_or_default();
     Ok(Some(Glow {
         color: colour.map_or(base.color, str::to_string),
@@ -542,8 +479,6 @@ fn parse_reveal(spec: &str, current: &Reveal) -> Result<Reveal> {
             Ok(Reveal::Instant)
         }
         Some("typewriter") | None => {
-            // What the spec leaves out comes from the preset, so
-            // `--reveal 'cps=50'` changes the speed and nothing else.
             let (base_cps, base_cursor, base_jitter, base_scroll) = match *current {
                 Reveal::Typewriter {
                     cps,
@@ -551,8 +486,8 @@ fn parse_reveal(spec: &str, current: &Reveal) -> Result<Reveal> {
                     jitter,
                     scroll,
                 } => (cps, cursor, jitter, scroll),
-                // Nothing to inherit. Saying so beats silently typing at a
-                // speed nobody chose.
+                // Typewriter fields require a typewriter preset or an explicit
+                // kind.
                 Reveal::Instant => {
                     anyhow::ensure!(
                         kind.is_some(),
@@ -585,9 +520,7 @@ fn parse_vanish(spec: &str, current: &Vanish) -> Result<Vanish> {
     s.finish()?;
 
     let kind = kind.unwrap_or_else(|| current.kind());
-    // Instant has no timing at all, so this runs before the duration is
-    // resolved: a stated ms here is a typo, and the answer must be that the
-    // effect takes no duration rather than that the duration is wrong.
+    // Reject duration on instant before parsing its value.
     if kind == "instant" {
         anyhow::ensure!(
             ms.is_none() && dir.is_none(),
@@ -595,17 +528,13 @@ fn parse_vanish(spec: &str, current: &Vanish) -> Result<Vanish> {
         );
         return Ok(Vanish::Instant);
     }
-    // An instant preset has no duration worth keeping, so fall back to the
-    // compiled default rather than to a 0 ms flicker.
+    // Use the built-in duration when switching from instant.
     let ms = ms.unwrap_or(match current.ms() {
         0 => config::DEFAULT_VANISH_MS,
         keep => keep,
     });
     if kind != "wash" {
-        // Refused rather than taken to mean wash: a spec that silently
-        // switches the effect because of one field is how a keybinding ends up
-        // doing something nobody wrote down. The kind is one word away, so
-        // hand it over instead of only saying no.
+        // Direction is valid only for wash; suggest an explicit kind.
         anyhow::ensure!(
             dir.is_none(),
             "--vanish: dir only applies to wash, not to {kind}; \
@@ -620,8 +549,7 @@ fn parse_vanish(spec: &str, current: &Vanish) -> Result<Vanish> {
         "dissolve" => Vanish::Dissolve { ms },
         "wash" => Vanish::Wash {
             ms,
-            // Carried over only from another wash; every other kind has no
-            // direction to inherit.
+            // Inherit direction only from wash.
             dir: dir.unwrap_or(match *current {
                 Vanish::Wash { dir, .. } => dir,
                 _ => Dir::Down,
@@ -646,8 +574,7 @@ fn parse_sound(spec: &str, current: &Sound) -> Result<Sound> {
     Ok(Sound {
         enabled: match enabled {
             None => current.enabled,
-            // "on"/"off" bare, "true"/"false" by name: the first is what one
-            // types, the second is what the config file says.
+            // Bare values use on/off; the named enabled field uses true/false.
             Some("on" | "true") => true,
             Some("off" | "false") => false,
             Some(other) => anyhow::bail!("--sound: {other:?} is not on or off"),
@@ -674,8 +601,7 @@ mod tests {
         assert_eq!(pos("center"), (HAlign::Center, VAlign::Center));
         assert_eq!(pos("top-left"), (HAlign::Left, VAlign::Top));
         assert_eq!(pos("left-top"), (HAlign::Left, VAlign::Top));
-        // Not "bottom, keeping whatever the preset said about the other axis":
-        // the same flag would then mean different things per preset.
+        // A bare position sets both axes.
         assert_eq!(pos("bottom"), (HAlign::Center, VAlign::Bottom));
     }
 
@@ -691,29 +617,25 @@ mod tests {
             pos("halign=left,valign=bottom"),
             (HAlign::Left, VAlign::Bottom)
         );
-        // One axis alone leaves the other at the preset's value.
+
         assert_eq!(pos("valign=top"), (HAlign::Center, VAlign::Top));
-        // And a word can still be corrected by a named field after it.
+        // Named fields can override the bare position.
         assert_eq!(pos("bottom,halign=right"), (HAlign::Right, VAlign::Bottom));
     }
 
     #[test]
     fn a_dropped_spelling_is_answered_with_the_one_that_works() {
-        // The CLI took "centre" before 1.0 and the config file never did.
-        // Keeping it would be two vocabularies again; refusing it with a list
-        // of five words, one of which differs by a letter, would be unkind.
+        // Suggest center for the obsolete centre alias.
         let err = format!("{:#}", with("--position", "centre").unwrap_err());
         assert!(err.contains(r#"spelled "center""#), "{err}");
     }
 
     #[test]
     fn a_direction_off_a_wash_is_handed_the_spec_that_works() {
-        // Strict on purpose: a spec must not switch the effect because of one
-        // field. But the kind is a word away, so the refusal carries it.
+        // Reject dir without wash and suggest the required kind.
         let err = format!("{:#}", with("--vanish", "fade,dir=up").unwrap_err());
         assert!(err.contains("wash,dir=up"), "{err}");
-        // The suggestion echoes the direction that was asked for, rather than
-        // a fixed one that would send someone the wrong way.
+        // Preserve the requested direction in the suggestion.
         let err = format!("{:#}", with("--vanish", "fade,dir=down").unwrap_err());
         assert!(err.contains("wash,dir=down"), "{err}");
     }
@@ -742,15 +664,13 @@ mod tests {
     fn outline_takes_a_colour_a_width_or_both() {
         let s = with("--outline", "#123456").unwrap();
         assert_eq!(s.outline.as_deref(), Some("#123456"));
-        // Nothing said about the width, so it stays unset and keeps scaling
-        // with the font size.
+
         assert_eq!(s.outline_width, None);
 
         let s = with("--outline", "#123456,width=3.5").unwrap();
         assert_eq!(s.outline.as_deref(), Some("#123456"));
         assert_eq!(s.outline_width, Some(3.5));
 
-        // Width alone, colour inherited.
         let s = with("--outline", "width=2").unwrap();
         assert_eq!(s.outline.as_deref(), Style::default().outline.as_deref());
         assert_eq!(s.outline_width, Some(2.0));
@@ -760,7 +680,7 @@ mod tests {
     fn outline_none_switches_the_stroke_off_and_takes_no_width() {
         let s = with("--outline", "none").unwrap();
         assert!(s.outline.is_none());
-        // There is no stroke to size, so this is a typo rather than a setting.
+
         assert!(with("--outline", "none,width=5").is_err());
     }
 
@@ -781,8 +701,6 @@ mod tests {
 
     #[test]
     fn glow_reaches_every_one_of_its_three_fields() {
-        // alpha is the field the old colon form had no room for, which is what
-        // started this.
         let s = with("--glow", "#b8bb26,radius=9,alpha=0.4").unwrap();
         let g = s.glow.expect("glow");
         assert_eq!(g.color, "#b8bb26");
@@ -822,7 +740,7 @@ mod tests {
 
     #[test]
     fn a_glow_field_over_a_preset_with_no_halo_turns_one_on() {
-        // Refusing here would mean naming a colour just to set a radius.
+        // A radius-only spec enables glow with its default colour.
         let s = with("--glow", "radius=6").unwrap();
         let g = s.glow.expect("glow");
         assert_eq!(g.radius, 6.0);
@@ -878,8 +796,7 @@ mod tests {
 
     #[test]
     fn scroll_is_a_field_now_so_it_switches_both_ways() {
-        // The old --scroll could only turn terminal mode on, which left a
-        // preset that asked for it impossible to override.
+        // Scroll must be overridable in both directions.
         let mut s = Style {
             reveal: Reveal::Typewriter {
                 cps: 28.0,
@@ -911,8 +828,7 @@ mod tests {
 
     #[test]
     fn a_typewriter_field_over_an_instant_preset_says_so() {
-        // Nothing to inherit, so typing at a speed nobody chose would be a
-        // guess. Naming the kind switches it on deliberately.
+        // Require an explicit kind when enabling typing from instant.
         let mut s = Style {
             reveal: Reveal::Instant,
             ..Style::default()
@@ -954,8 +870,6 @@ mod tests {
 
     #[test]
     fn a_vanish_duration_alone_keeps_the_effect() {
-        // Only reachable because kind() gives the preset's variant a name the
-        // spec can leave unsaid.
         let mut s = Style {
             vanish: Vanish::Dissolve { ms: 400 },
             ..Style::default()
@@ -974,7 +888,7 @@ mod tests {
                 dir: Dir::Up
             }
         );
-        // A direction on anything else is a typo, not a setting.
+
         assert!(with("--vanish", "fade,dir=up").is_err());
         assert!(with("--vanish", "wash,dir=sideways").is_err());
     }
@@ -1002,13 +916,11 @@ mod tests {
     #[test]
     fn instant_vanish_takes_no_duration_and_survives_the_fallback() {
         assert_eq!(with("--vanish", "instant").unwrap().vanish, Vanish::Instant);
-        // The check runs before the duration is resolved, so the complaint is
-        // that instant has no duration rather than that this one is wrong.
+        // Report that instant takes no duration before parsing ms.
         let err = format!("{:#}", with("--vanish", "instant,ms=99999999").unwrap_err());
         assert!(err.contains("takes no other fields"), "{err}");
 
-        // An instant preset has no duration to keep, so a real effect falls
-        // back to the compiled default rather than to a 0 ms flicker.
+        // Switching from instant uses the built-in effect duration.
         let mut s = Style {
             vanish: Vanish::Instant,
             ..Style::default()
@@ -1026,7 +938,7 @@ mod tests {
     #[test]
     fn an_unknown_vanish_kind_is_rejected_not_ignored() {
         assert!(with("--vanish", "sparkle").is_err());
-        // The old spellings are gone: one vocabulary with the config file.
+        // Reject obsolete aliases.
         for old in ["wash-up", "wash-down", "crt", "none"] {
             assert!(with("--vanish", old).is_err(), "{old:?} should be gone");
         }
@@ -1039,7 +951,7 @@ mod tests {
         assert_eq!(s.sound.decay_ms, 60.0);
         assert_eq!(s.sound.gain, 0.3);
         assert_eq!(s.sound.every, 4);
-        // Untouched, so still on.
+
         assert!(s.sound.enabled);
     }
 
@@ -1082,8 +994,7 @@ mod tests {
 
     #[test]
     fn an_unknown_field_is_refused_by_every_grouped_flag() {
-        // deny_unknown_fields, but for the command line: a flag that ignores
-        // half its spec is how a keybinding ends up lying about what it does.
+        // Reject unknown fields for every spec flag.
         for (flag, spec) in [
             ("--outline", "#111,thickness=3"),
             ("--glow", "#111,size=3"),
@@ -1099,9 +1010,7 @@ mod tests {
 
     #[test]
     fn the_command_line_is_held_to_the_same_ranges_as_the_config() {
-        // Every one of these is checked in Style::validate and nowhere else
-        // now; run() calls it after the overrides land. Before, each flag
-        // restated its own bound and the two lists drifted.
+        // Validate ranges after applying CLI overrides.
         for (flag, spec) in [
             ("--outline", "#111,width=999"),
             ("--glow", "#111,radius=999"),
@@ -1123,9 +1032,7 @@ mod tests {
 
     #[test]
     fn every_style_field_is_reachable_from_the_command_line() {
-        // The whole point of the rework: anything the config file can say, the
-        // command line can say too, in the same words. A field added to Style
-        // without a flag should fail here rather than be noticed a year later.
+        // Check that CLI specs can express all style fields.
         let cli = Cli::parse_from([
             "wayhud",
             "x",
@@ -1198,7 +1105,7 @@ mod tests {
     #[test]
     fn absurd_timeouts_are_rejected_at_the_edge() {
         let mut s = Style::default();
-        // 1e9 seconds used to reach the mixer and try to allocate the silence.
+        // Large timeouts must fail before audio allocation.
         let cli = Cli::parse_from(["wayhud", "x", "--timeout", "1e9"]);
         assert!(apply_overrides(&mut s, &cli).is_err());
         let cli = Cli::parse_from(["wayhud", "x", "--timeout", "3600"]);
@@ -1210,26 +1117,21 @@ mod tests {
         assert_eq!(unescape("a\\nb"), "a\nb");
         assert_eq!(unescape("a\\tb"), "a\tb");
         assert_eq!(unescape("a\\\\nb"), "a\\nb");
-        // A Windows-ish path must not lose its backslash to a silent drop.
+        // Preserve backslashes in unknown escapes.
         assert_eq!(unescape("C:\\dir"), "C:\\dir");
         assert_eq!(unescape("trailing\\"), "trailing\\");
     }
 
     #[test]
     fn a_trailing_newline_is_trimmed_however_the_text_arrived() {
-        // Pango makes an empty final line out of it and counts that line in
-        // the layout height, so the surface is a line taller than the message:
-        // the compositor centres the phantom too and everything sits half a
-        // line high, with the caret finishing at x=0 on the empty line.
-        // stdin was already trimmed for exactly this reason; argv was not, so
-        // the same message rendered differently depending on how it was given.
+        // Trim trailing newlines consistently for argv and stdin.
         let cli = Cli::parse_from(["wayhud", "one\ntwo\n"]);
         assert_eq!(read_text(&cli).unwrap(), "one\ntwo");
 
         let cli = Cli::parse_from(["wayhud", "one\n\n\n"]);
         assert_eq!(read_text(&cli).unwrap(), "one", "all of them, not just one");
 
-        // A newline in the middle is the whole point of the feature and stays.
+        // Preserve internal newlines.
         let cli = Cli::parse_from(["wayhud", "one\n\ntwo"]);
         assert_eq!(read_text(&cli).unwrap(), "one\n\ntwo");
     }
@@ -1242,9 +1144,7 @@ mod tests {
 
     #[test]
     fn an_absurdly_long_message_is_rejected_at_the_edge() {
-        // Everything downstream scales with the text — steps, onsets, the
-        // shaped layout — so an unbounded pipe is an OOM before the first
-        // frame, and the lifetime cap only fires after those allocations.
+        // Bound text before downstream allocations.
         let long = "x".repeat(config::MAX_TEXT_CHARS + 1);
         let cli = Cli::parse_from(["wayhud", &long]);
         let err = read_text(&cli).unwrap_err();
@@ -1252,17 +1152,15 @@ mod tests {
             format!("{err:#}").contains("maximum"),
             "wrong error: {err:#}"
         );
-        // The boundary itself still loads.
+
         let cli = Cli::parse_from(["wayhud", &"x".repeat(config::MAX_TEXT_CHARS)]);
         assert!(read_text(&cli).is_ok());
     }
 
     #[test]
     fn an_endless_stream_stops_at_the_budget_instead_of_being_read_whole() {
-        // argv is bounded by ARG_MAX; the pipe is the side that can grow
-        // without limit, so it is the side worth a test. The byte counter is
-        // the assertion that matters — a cap that only counts characters
-        // passes the error check below while still having read everything.
+        // Check bytes consumed as well as the error: character counting alone
+        // would allow an unbounded read before rejection.
         struct Counting {
             asked: usize,
             left: usize,
@@ -1277,7 +1175,7 @@ mod tests {
             }
         }
         let budget = MAX_TEXT_CHARS * 4 + 1;
-        // Finite, so a regression fails the assertion rather than hanging.
+        // Use a finite source so a regression fails without hanging.
         let mut src = Counting {
             asked: 0,
             left: budget * 4,
@@ -1292,7 +1190,7 @@ mod tests {
             "read {} bytes against a {budget}-byte budget: the stream is not bounded",
             src.asked
         );
-        // A message at the cap still arrives whole.
+
         let at_cap = "x".repeat(MAX_TEXT_CHARS);
         assert_eq!(read_capped(at_cap.as_bytes()).unwrap(), at_cap);
     }
