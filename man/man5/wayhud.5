@@ -275,6 +275,29 @@ default
 The typewriter blip. See
 .B SOUND
 below.
+.SH THE COMMAND LINE
+Every key here has a flag, and the two use the same names. A flag that stands
+for a table takes an optional bare value followed by comma\-separated
+.IR key = value
+pairs, with the keys spelled as they are spelled in this page:
+.B \-\-glow \(aq#b8bb26,radius=12\(aq
+sets what
+.B glow = { color = \(dq#b8bb26\(dq, radius = 12 }
+sets. A field the flag does not mention keeps the preset's value, and an
+unknown one is refused with the list of the ones that exist \- the same answer
+.B deny_unknown_fields
+gives a typo in this file.
+.PP
+The ranges stated here are checked once, by the same code, whichever way the
+value arrived. The one difference in units is the hold:
+.B timeout_ms
+is milliseconds, while
+.B \-\-timeout
+is seconds.
+.PP
+See
+.BR wayhud (1)
+for the flags themselves.
 .SH REVEAL
 A table with a
 .B kind
@@ -379,8 +402,10 @@ transfers over verbatim.
 .BR true )
 .br
 Whether to make any noise at all.
-.B \-\-no\-sound
-overrides this to false.
+.B \-\-sound off
+overrides this to false, and
+.B \-\-sound on
+back to true, without touching the knobs below.
 .TP
 .B freq
 (float, 100\(en8000 Hz; default

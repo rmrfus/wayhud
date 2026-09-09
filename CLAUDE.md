@@ -24,6 +24,11 @@ carry a broken hunk through.
 ## Layout
 
 - `main.rs` — CLI, the flag-over-preset overrides, and the GTK main loop.
+- `spec.rs` — the `key=value` flag grammar. Every flag that stands for a config
+  table parses through it, so the command line and the config file use one set
+  of names: `--glow '#b8bb26,radius=12'` is `glow = { color = "#b8bb26",
+  radius = 12 }`. Unknown fields are refused with the list of known ones, which
+  is `deny_unknown_fields` carried onto the command line.
 - `config.rs` — the TOML presets and the resolved `Style`. Presets are held as
   raw tables so a preset can be merged onto `[style.default]` before serde
   fills in defaults; deserialising first would make "unset" and "set to the

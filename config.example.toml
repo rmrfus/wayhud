@@ -2,6 +2,10 @@
 #
 # Every key with its type, default and range: man 5 wayhud
 #
+# Every key here also has a flag, using the same names: the table below is
+#   wayhud --glow '#b8bb26,radius=12,alpha=0.55' --reveal 'cps=28,scroll=true'
+# A flag states only what it changes; the rest comes from the preset.
+#
 # [style.default] is the base for every other preset: a key a preset does not
 # set is taken from there, and only then from the compiled-in default. Unknown
 # keys are an error, so a typo tells you instead of quietly doing nothing.

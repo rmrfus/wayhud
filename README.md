@@ -11,7 +11,7 @@ animations.
 
 ![wayhud — a message typed out over the desktop, then dissolving](assets/demo.gif)
 
-> Real capture, bottom-right corner of one output: `--typewriter 50` typing a
+> Real capture, bottom-right corner of one output: `--reveal 'cps=50'` typing a
 > three-line message in, then `--vanish dissolve` taking it apart.
 
 The overlay keeps an empty input region, so it never steals a click or a
@@ -20,8 +20,8 @@ keystroke from whatever is underneath.
 ```sh
 wayhud "SYSTEM ONLINE"
 wayhud -o all -t 10 --position top "BUILD FAILED"
-wayhud --vanish untype:900 "THIS MESSAGE WILL SELF DESTRUCT"
-journalctl -n 3 -u nginx | wayhud --typewriter 0 --color '#fb4934'
+wayhud --vanish 'untype,ms=900' "THIS MESSAGE WILL SELF DESTRUCT"
+journalctl -n 3 -u nginx | wayhud --reveal instant --color '#fb4934'
 ```
 
 Piped input is read to EOF before anything is shown, so a stream that never
@@ -80,36 +80,74 @@ make && make install DESTDIR="$pkgdir" PREFIX=/usr
 See `man 1 wayhud` for the full reference, and `man 5 wayhud` for the config
 file format.
 
-| Flag            | Default   | Meaning                                                        |
-| --------------- | --------- | -------------------------------------------------------------- |
-| `TEXT`          | —         | Message, at most 100000 chars. Omit or pass `-` to read stdin. |
-| `-o, --output`  | `current` | `current`, `all`, or `DP-3,eDP-1`                              |
-| `-t, --timeout` | `5`       | Hold in seconds, counted from the END of the reveal            |
-| `-s, --style`   | `default` | Preset from the config file                                    |
-| `--font`        | —         | Pango description, e.g. `"Monospace 72"`                       |
-| `--color`       | —         | Any CSS colour GTK parses                                      |
-| `--outline`     | —         | Outline colour, optionally `:WIDTH` (not on `none`), or `none` |
-| `--glow`        | —         | Halo colour, optionally `:RADIUS` (not on `none`), or `none`   |
-| `--position`    | —         | `center`, `top`, `bottom-right`, …                             |
-| `--typewriter`  | —         | Characters/second; `0` reveals instantly                       |
-| `--jitter`      | —         | Stagger keystroke gaps by ±this fraction (0–1)                 |
-| `--scroll`      | —         | Terminal mode: write on the bottom line, lift the rest         |
-| `--vanish`      | —         | Exit effect, optionally `:MS` (not on `instant`) — see below   |
-| `--no-sound`    | —         | Stay quiet regardless of the style                             |
-| `--raw`         | —         | Take the argument literally (no `\n` / `\t` expansion)         |
-| `--config`      | XDG path  | Config file location                                           |
+| Flag            | Default   | Meaning                                                            |
+| --------------- | --------- | ------------------------------------------------------------------ |
+| `TEXT`          | —         | Message, at most 100000 chars. Omit or pass `-` to read stdin.     |
+| `-o, --output`  | `current` | `current`, `all`, or `DP-3,eDP-1`                                  |
+| `-t, --timeout` | `5`       | Hold in **seconds**, counted from the END of the reveal            |
+| `-s, --style`   | `default` | Preset from the config file                                        |
+| `--font`        | —         | Pango description, e.g. `"Monospace 72"`                           |
+| `--color`       | —         | Any CSS colour GTK parses                                          |
+| `--outline`     | —         | Colour or `none`; `width=`                                         |
+| `--glow`        | —         | Colour or `none`; `radius=`, `alpha=`                              |
+| `--position`    | —         | `bottom-left`, `center`, …; `halign=`, `valign=`                   |
+| `--margin`      | —         | Gap from the anchored edge, logical px                             |
+| `--line-align`  | —         | `left`, `center`, `right` — lines inside the block                 |
+| `--reveal`      | —         | `instant` or `typewriter`; `cps=`, `cursor=`, `jitter=`, `scroll=` |
+| `--vanish`      | —         | Effect name; `ms=`, and `dir=` on `wash`                           |
+| `--sound`       | —         | `on`/`off`; `freq=`, `decay_ms=`, `gain=`, `every=`                |
+| `--raw`         | —         | Take the argument literally (no `\n` / `\t` expansion)             |
+| `--config`      | XDG path  | Config file location                                               |
+
+### Flag fields
+
+Every flag that stands for a config table takes the same shape: an optional
+bare value first, then comma-separated `key=value` pairs. The keys are spelled
+exactly as the TOML keys are, so a flag and a preset are the same words in the
+same order:
+
+```sh
+wayhud --glow '#b8bb26,radius=12,alpha=0.7' x
+#      glow = { color = "#b8bb26", radius = 12.0, alpha = 0.7 }
+```
+
+The bare value is the field a flag is usually about — the colour for `--glow`
+and `--outline`, the kind for `--reveal` and `--vanish`, `on`/`off` for
+`--sound`. It may also be written by name, and giving it both ways is an error
+rather than something to resolve.
+
+A field the spec does not mention keeps the preset's value. That is what makes
+these composable: `--glow 'alpha=0.3'` dims the halo a preset already
+configured, without restating its colour or radius.
+
+An unknown field is refused with the list of the ones that exist, the way
+`deny_unknown_fields` refuses a typo in the config file:
+
+```
+$ wayhud --reveal 'typewriter,speed=50' x
+wayhud: --reveal: unknown field "speed" (want kind, cps, cursor, jitter, scroll)
+```
+
+Ranges are checked once, by the same code the config file goes through, so a
+bound cannot hold in one place and not the other.
+
+Synonyms the flags took before 1.0 and the config file never did — `centre`,
+`wash-up`, `crt`, `none` for `instant` — are gone for the same reason. Each is
+refused with the spelling that replaces it, not just refused.
 
 The hold timeout is measured from the **end** of the reveal, not from start-up,
-so a slow typewriter doesn't eat into the reading time.
+so a slow typewriter doesn't eat into the reading time. It is the one number
+that differs between the two: `--timeout` is in seconds, `timeout_ms` in
+milliseconds.
 
 The whole lifetime — reveal plus hold plus vanish — is capped at one hour, and a
 message that would exceed it is refused rather than shown: nothing can dismiss a
-HUD early, so a fat-fingered `--timeout`, a `--typewriter 0.01` or an absurd
-`--vanish fade:99999999` would all strand it on screen.
+HUD early, so a fat-fingered `--timeout`, a `--reveal 'cps=0.01'` or an absurd
+`--vanish 'fade,ms=99999999'` would all strand it on screen.
 
-`--jitter` and `--scroll` both need a typewriter reveal: with `--typewriter 0`,
-or a preset whose `reveal` is instant, either one is an error rather than a flag
-that quietly does nothing.
+A typewriter field over a preset that reveals instantly is an error rather than
+a flag that quietly does nothing: there is nothing to adjust, so say
+`--reveal 'typewriter,cps=50'` and switch it on deliberately.
 
 `\n` and `\t` in the argument are expanded, because sway's `exec` runs through
 `sh`, which has no `$'...'`. Text arriving on stdin is used verbatim.
@@ -132,14 +170,13 @@ all is an error.
 The typewriter fills a message in one of two ways and both ship. By default it
 fills the block **downwards from the top**: the box is sized for the finished
 message up front, so the write head starts at the top edge and walks down
-through the room reserved for the rest. `--scroll`, or `scroll = true` inside a
-typewriter `reveal`, picks the other one — the write head stays on the **last**
-line of the block, and reaching a newline lifts everything already written by
-one line.
+through the room reserved for the rest. `scroll=true` picks the other one — the
+write head stays on the **last** line of the block, and reaching a newline
+lifts everything already written by one line.
 
 ```sh
 # terminal: every line lands on the bottom row and pushes the rest up
-wayhud --scroll --position bottom-left \
+wayhud --reveal 'scroll=true' --position bottom-left \
        "CHECKING DISKS\nMOUNTING /\nBRINGING UP eth0\nOK"
 
 # the default: the same message, filled downwards from the top
@@ -156,31 +193,35 @@ look; with `center` or `top` the block stays where it was put and fills from
 its own bottom edge upwards. A message with no newlines draws identically in
 both modes — there is nothing above it to lift.
 
+It switches both ways, so a preset that asks for terminal mode can be put back:
+`--reveal 'scroll=false'`.
+
 An `untype` vanish runs the terminal rule backwards, because the offset follows
 the write head rather than the clock: the block slides back down as the lines
 are eaten.
 
 ## Vanish effects
 
-`--vanish <kind>[:<ms>]`, or `vanish = { kind = "...", ms = ... }` in a preset.
-`instant` takes no `:MS`. Without `:MS` the flag keeps whatever duration the
-preset already had, so you can cycle through effects without restating the
-timing.
+`--vanish <kind>`, or `vanish = { kind = "...", ms = ... }` in a preset — the
+same names on both sides. `instant` takes no `ms`. Without `ms=` the flag keeps
+whatever duration the preset already had, so you can cycle through effects
+without restating the timing; without a kind, `--vanish 'ms=800'` retimes the
+effect the preset chose.
 
-| `--vanish`  | In a preset                       | What it looks like                                                  |
-| ----------- | --------------------------------- | ------------------------------------------------------------------- |
-| `instant`   | `{ kind = "instant" }`            | Gone on the frame the hold expires.                                 |
-| `fade`      | `{ kind = "fade" }`               | Alpha to zero.                                                      |
-| `collapse`  | `{ kind = "collapse" }`           | CRT power-off: squashes to a bright line, blooms wider, blinks out. |
-| `wash-down` | `{ kind = "wash", dir = "down" }` | A soft edge sweeps top to bottom, erasing as it passes.             |
-| `wash-up`   | `{ kind = "wash", dir = "up" }`   | The same, bottom to top.                                            |
-| `untype`    | `{ kind = "untype" }`             | The caret walks back and eats the text, blipping on the way out.    |
-| `dissolve`  | `{ kind = "dissolve" }`           | Falls apart into blocks in a fixed pseudo-random order.             |
+| Kind       | What it looks like                                                  |
+| ---------- | ------------------------------------------------------------------- |
+| `instant`  | Gone on the frame the hold expires.                                 |
+| `fade`     | Alpha to zero.                                                      |
+| `collapse` | CRT power-off: squashes to a bright line, blooms wider, blinks out. |
+| `wash`     | A soft edge sweeps through the text, erasing as it passes.          |
+| `untype`   | The caret walks back and eats the text, blipping on the way out.    |
+| `dissolve` | Falls apart into blocks in a fixed pseudo-random order.             |
 
-The two spellings are not interchangeable: the flag folds the direction into
-the name, the config keeps one `wash` kind with a separate `dir`. The flag also
-takes `none` for `instant`, `crt` for `collapse`, and a bare `wash` for
-`wash-down`.
+`wash` carries `dir`, which is `down` (the default) or `up`:
+`--vanish 'wash,dir=up,ms=700'`. Before 1.0 the flag folded the direction into
+the name as `wash-up`, and took `crt` and `none` as aliases; those are gone, so
+that the flag and the config file cannot mean different things by the same
+word.
 
 `untype` is the only one that makes noise — it is typing, so it clicks. It also
 gets a caret even after an instant reveal, since otherwise characters would

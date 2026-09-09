@@ -49,6 +49,49 @@ into an empty final line and counts it in the height, so the surface comes out
 a line taller than the message: the compositor centres that phantom line along
 with the text, and everything sits half a line off.
 .SH OPTIONS
+Flags that stand for a config table \-
+.BR \-\-outline ,
+.BR \-\-glow ,
+.BR \-\-position ,
+.BR \-\-reveal ,
+.BR \-\-vanish ,
+.B \-\-sound
+\- all take the same
+.IR SPEC :
+an optional bare value first, then comma\-separated
+.IR key = value
+pairs. The keys are spelled exactly as the TOML keys are, so
+.B \-\-glow \(aq#b8bb26,radius=12\(aq
+and
+.B glow = { color = \(dq#b8bb26\(dq, radius = 12 }
+are the same words in the same order.
+.PP
+The bare value is the field the flag is usually about \- the colour for
+.B \-\-glow
+and
+.BR \-\-outline ,
+the kind for
+.B \-\-reveal
+and
+.BR \-\-vanish ,
+.BR on / off
+for
+.BR \-\-sound .
+It may also be written by name; giving it both ways is an error rather than
+something to resolve.
+.PP
+A field the spec does not mention keeps the preset's value, which is what makes
+these composable:
+.B \-\-glow \(aqalpha=0.3\(aq
+dims a halo the preset already configured without restating its colour or
+radius. An unknown field is refused with the list of the ones that exist, the
+way an unknown key is refused in the config file. Ranges are checked by the
+same code the config file goes through, so a bound cannot hold in one place
+and not the other.
+.PP
+Commas inside brackets are left alone, so a CSS colour such as
+.B rgb(184, 187, 38)
+is one field rather than three.
 .TP
 .BR \-o ", " \-\-output " \fISPEC\fR"
 Which outputs to show on:
@@ -111,30 +154,32 @@ Fill colour of the glyphs. Any colour GTK's CSS parser accepts:
 .BR "rgba(184,187,38,0.8)" ,
 .BR green .
 .TP
-.BR \-\-outline " \fICOLOUR\fR[:\fIWIDTH\fR]"
-Outline colour, or
+.BR \-\-outline " \fISPEC\fR"
+Stroke the glyphs, or
 .B none
-to draw the glyphs flat. A size on
-.B none
-is rejected: there is no stroke to size. The outline is a real cairo stroke around the glyph
-path, not a shadow, so it stays clean at display sizes.
+for flat text. Fields:
+.BR color ,
+.B width
+(logical pixels, 0 to 128).
 .IP
-.I WIDTH
-is in logical pixels, 0 to 128, and pins the stroke the way
-.B outline_width
-does in the config. Without it the flag changes only the colour and leaves the
-width as it was \- which, left unset, means it scales with the font size,
-keeping the halo a fixed fraction of the stem: a constant width that looks
-like a fine contour at 72pt reads as fake bold at 24pt.
+Real cairo path, not a shadow, so it stays clean at display sizes. Without
+.B width
+the flag changes only the colour and leaves the stroke as it was \- which,
+left unset, scales with the font size, keeping the halo a fixed fraction of
+the stem: a constant width that looks like a fine contour at 72pt reads as
+fake bold at 24pt. A width on
+.B none
+is rejected; there is no stroke to size.
 .TP
-.BR \-\-glow " \fICOLOUR\fR[:\fIRADIUS\fR]"
+.BR \-\-glow " \fISPEC\fR"
 Paint a soft halo behind the glyphs, or
 .B none
-for no halo. A radius on
-.B none
-is rejected: there is no halo to size. The radius is in logical pixels, 0 to 128; without it the flag
-keeps whatever the preset had, so a colour can be tried without restating the
-geometry.
+for no halo. Fields:
+.BR color ,
+.B radius
+(logical pixels, 0 to 128),
+.B alpha
+(0 to 1).
 .IP
 The halo is drawn
 .I under
@@ -144,8 +189,8 @@ per output when the message is built, and it widens the padding \- which comes
 out of the wrapping budget, so a very large radius makes long lines wrap
 sooner.
 .TP
-.BR \-\-position " \fIPLACE\fR"
-Where the text block sits:
+.BR \-\-position " \fISPEC\fR"
+Where the text block sits. The bare value is a placement word:
 .BR center ,
 .BR top ,
 .BR bottom ,
@@ -155,72 +200,136 @@ or a hyphenated pair such as
 .B top\-left
 or
 .BR bottom\-right ,
-in either order. A centred axis ignores the configured margin.
+in either order. It names BOTH axes, so
+.B bottom
+is bottom\-centre. Spelled
+.BR center ,
+the way the config file spells it; the
+.B centre
+this flag took before 1.0 is gone, so that the two cannot drift apart again.
+Fields:
+.BR halign ,
+.BR valign ,
+which set one axis each and leave the other alone. A centred axis ignores the
+margin.
 .TP
-.BR \-\-typewriter " \fICPS\fR"
-Reveal speed in characters per second.
-.B 0
-reveals the whole message instantly.
+.BR \-\-margin " \fIPX\fR"
+Gap from the anchored edge, in logical pixels. Measured to the SURFACE, not to
+the text: the surface carries transparent padding for the outline, the halo
+and the caret. Ignored on a centred axis.
 .TP
-.BR \-\-jitter " \fIF\fR"
-Randomise each keystroke gap by up to +/\- this fraction of it, 0 to 1, so
-the typing stops sounding like a metronome. Requires a typewriter reveal;
-with
-.B \-\-typewriter 0
-it is an error rather than a silently ignored flag.
+.BR \-\-line\-align " \fIALIGN\fR"
+Alignment of the lines within the text block:
+.BR left ,
+.B center
+or
+.BR right .
+Distinct from
+.BR \-\-position ,
+which places the block itself.
 .TP
-.B \-\-scroll
-Terminal mode, off unless asked for. The typewriter fills a block in one of two
-ways and this picks the second: the write head stays on the LAST line, and
-reaching a newline lifts everything already written by one line. Left alone the
-reveal fills the block downwards from its top edge, as it always has.
+.BR \-\-reveal " \fISPEC\fR"
+How the text appears. The bare value is the kind:
+.B instant
+or
+.BR typewriter .
+Fields, all belonging to the typewriter:
+.B cps
+(characters per second, positive),
+.B cursor
+(true/false),
+.B jitter
+(0 to 1),
+.B scroll
+(true/false).
 .IP
-Nothing else differs between the two. The surface is sized from the finished
-message and placed before the first character is drawn either way, so the mode
-moves the text inside the box and never the box itself \- it needs no
-particular anchor and holds under any
-.BR \-\-position .
-A message with no newlines draws identically in both modes; there is nothing
-above it to lift.
+.B jitter
+randomises each gap between keystrokes by up to that fraction of it, either
+way, so the typing stops sounding like a metronome; the variation is
+symmetric, so the reveal still takes about
+.I chars
+/
+.I cps
+seconds. The blips follow the same moments as the glyphs \- they are the same
+numbers, not a second calculation \- so sound and animation cannot drift apart.
 .IP
-Requires a typewriter reveal, the same way
-.B \-\-jitter
-does.
+.B scroll
+is terminal mode: the write head stays on the LAST line of the block and
+reaching a newline lifts everything already written by one line, instead of
+the block being filled downwards from its top edge. See
+.B TERMINAL MODE
+below.
+.IP
+A field over a preset that reveals instantly is an error rather than a flag
+that quietly does nothing: there is nothing to adjust, so name the kind and
+switch the typewriter on deliberately.
 .TP
-.BR \-\-vanish " \fIKIND\fR[:\fIMS\fR]"
-Exit animation, one of:
+.BR \-\-vanish " \fISPEC\fR"
+How the text goes away. The bare value is the kind:
+.BR instant ,
+.BR fade ,
+.BR collapse ,
+.BR wash ,
+.BR untype ,
+.BR dissolve .
+Fields:
+.B ms
+(duration; not accepted on
+.BR instant ),
+.B dir
+.RB ( up / down ,
+only on
+.BR wash ).
 .RS
 .TP
-.BR instant " (alias: " none )
-Gone on the frame the hold expires. Takes no duration suffix.
+.B instant
+Gone on the frame the hold expires.
 .TP
 .B fade
 Alpha to zero.
 .TP
-.BR collapse " (alias: " crt )
-CRT power\-off: squashes to a bright line, blooms wider, blinks out.
+.B collapse
+CRT power\-off: squashes to a bright line, blooms slightly wider, washes to
+white, blinks out.
 .TP
-.BR wash\-down " (alias: " wash )
-A soft edge sweeps top to bottom, erasing as it passes.
-.TP
-.B wash\-up
-The same, bottom to top.
+.B wash
+A soft edge sweeps through the text and erases it as it passes.
 .TP
 .B untype
-The caret walks back and eats the text, blipping as it goes. The only exit
-that makes a sound.
+The caret walks back and eats the text, blipping on the way out. The only one
+that makes noise, because it is typing; it gets a caret even when the reveal
+was instant.
 .TP
 .B dissolve
-The glyphs fall apart into blocks in a fixed pseudo\-random order.
+The text falls apart into blocks, in a fixed pseudo\-random order.
 .RE
 .IP
 Without
-.RI : MS
-the flag keeps whatever duration the preset already had, so effects can be
-cycled without restating the timing.
+.B ms
+the flag keeps whatever duration the preset had, so effects can be cycled
+through without restating the timing; without a kind,
+.B \-\-vanish ms=800
+retimes the effect the preset chose.
 .TP
-.B \-\-no\-sound
-Stay silent regardless of what the style asks for.
+.BR \-\-sound " \fISPEC\fR"
+The typewriter blip. The bare value is
+.B on
+or
+.BR off .
+Fields:
+.B enabled
+(true/false),
+.B freq
+(100 to 8000 Hz),
+.B decay_ms
+(10 to 3000),
+.B gain
+(0 to 1),
+.B every
+(blip once every N revealed characters, at least 1).
+.IP
+Switching it off does not reset the knobs, and a preset that silenced itself
+can be switched back on.
 .TP
 .B \-\-raw
 Take
@@ -240,6 +349,38 @@ Print a usage summary and exit.
 .TP
 .BR \-V ", " \-\-version
 Print the version and exit.
+.SH TERMINAL MODE
+The typewriter fills a block in one of two ways, and
+.B \-\-reveal scroll=true
+picks the second.
+.PP
+At the default the block is filled downwards from its top edge: it is sized for
+the finished message up front, so the write head starts at the top and walks
+down through the room reserved for the rest. With
+.B scroll
+set, the write head stays on the LAST line of the block and reaching a newline
+lifts everything already written by one line.
+.PP
+Nothing else differs. The surface is sized from the finished message and placed
+before the first character is drawn either way, so the mode moves the text
+inside the box and never the box itself \- it needs no particular anchor and
+holds under any
+.BR \-\-position .
+With
+.B bottom
+the writing sits on the bottom margin the whole way through, which is the
+terminal look; with
+.B center
+or
+.B top
+the block stays where it was put and fills from its own bottom edge upwards. A
+message with no newlines draws identically in both modes; there is nothing
+above it to lift.
+.PP
+An
+.B untype
+vanish runs the rule backwards, since the offset follows the write head and
+not the clock: the block slides back down as the lines are eaten.
 .SH CONFIGURATION
 .B wayhud
 reads
@@ -285,13 +426,16 @@ Two lines from a keybinding in the sway config:
 .B bindsym $mod+Shift+h exec wayhud \(dqLOCKED\enBACK IN 5\(dq
 .TP
 Piped in, no animation, no sound:
-.B echo \(dq$(uptime)\(dq | wayhud \-\-typewriter 0 \-\-no\-sound
+.B echo \(dq$(uptime)\(dq | wayhud \-\-reveal instant \-\-sound off
 .TP
 Self\-destructing note:
-.B wayhud \-s spy \-\-vanish untype:900 \(dqTHIS MESSAGE WILL SELF DESTRUCT\(dq
+.B wayhud \-s spy \-\-vanish \(aquntype,ms=900\(aq \(dqTHIS MESSAGE WILL SELF DESTRUCT\(dq
 .TP
 A boot log crawling up the bottom corner:
-.B wayhud \-\-scroll \-\-position bottom\-left \(dqCHECKING DISKS\enMOUNTING /\enOK\(dq
+.B wayhud \-\-reveal \(aqscroll=true\(aq \-\-position bottom\-left \(dqCHECKING DISKS\enMOUNTING /\enOK\(dq
+.TP
+A quieter, slower blip:
+.B wayhud \-\-sound \(aqfreq=1200,gain=0.1,every=2\(aq \(dqSTANDING BY\(dq
 .SH ENVIRONMENT
 .TP
 .B I3SOCK

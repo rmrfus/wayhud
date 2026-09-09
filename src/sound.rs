@@ -15,8 +15,8 @@ const RATE: u32 = 48_000;
 
 /// Longest track we will mix, in seconds. The buffer is sized from the last
 /// onset, so this is the difference between a bad number reaching us and an
-/// abort: an hour of f64 samples is 1.4 GB, and `--typewriter 1e-9` asked for
-/// 768 TB. Callers bound the message lifetime too; this is the backstop that
+/// abort: an hour of f64 samples is 1.4 GB, and `--reveal 'cps=1e-9'` asked
+/// for 768 TB. Callers bound the message lifetime too; this is the backstop that
 /// does not depend on them getting it right.
 const MAX_TRACK_S: f64 = 120.0;
 
@@ -165,7 +165,7 @@ mod tests {
 
     #[test]
     fn absurd_onsets_do_not_size_the_buffer() {
-        // --typewriter 1e-9 reached here and asked for 768 TB.
+        // A cps of 1e-9 reached here and asked for 768 TB.
         let t = typewriter_track(&cfg(), &[1e12]);
         assert!(t.is_empty(), "an out-of-range onset must be dropped");
         // A sane onset alongside it still plays.

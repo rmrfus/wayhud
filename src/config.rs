@@ -26,8 +26,8 @@ use serde::Deserialize;
 /// dismiss one early.
 ///
 /// Bounds the WHOLE lifetime (reveal + hold + vanish), not just the hold:
-/// `--typewriter 0.01` or `--vanish fade:99999999999999` strand the overlay
-/// exactly as well as a huge `--timeout` does.
+/// `--reveal 'cps=0.01'` or `--vanish 'fade,ms=99999999999999'` strand the
+/// overlay exactly as well as a huge `--timeout` does.
 pub const MAX_LIFETIME_MS: u64 = 3_600_000;
 
 /// Longest message we will render, in characters. Everything downstream
@@ -169,6 +169,20 @@ impl Vanish {
         }
     }
 
+    /// The name this variant answers to, in the config file and on the command
+    /// line alike — one spelling, so `--vanish 'ms=250'` can keep the preset's
+    /// effect without a second table of variants to fall out of step.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Vanish::Instant => "instant",
+            Vanish::Fade { .. } => "fade",
+            Vanish::Collapse { .. } => "collapse",
+            Vanish::Wash { .. } => "wash",
+            Vanish::Untype { .. } => "untype",
+            Vanish::Dissolve { .. } => "dissolve",
+        }
+    }
+
     /// Untype reveals in reverse, so it drives the caret and the blip track
     /// rather than being a pure paint effect like the others.
     pub fn is_untype(&self) -> bool {
@@ -295,7 +309,12 @@ impl Style {
     /// Range checks that serde cannot express. Runs on the preset actually
     /// selected, so an unused broken preset elsewhere in the file is not a
     /// reason to refuse to show a message.
-    fn validate(&self) -> Result<()> {
+    ///
+    /// Public because the command line has to be held to the same ranges. It
+    /// used to state them again in the flag parsers, which is two lists to
+    /// keep in step and one of them silently authoritative: whichever ran
+    /// last.
+    pub fn validate(&self) -> Result<()> {
         anyhow::ensure!(
             self.timeout_ms <= MAX_LIFETIME_MS,
             "timeout_ms is {} but the maximum is {MAX_LIFETIME_MS}",
@@ -322,8 +341,12 @@ impl Style {
             // Zero is not an instant reveal in disguise: the timeline would
             // still type instantly, but the Typewriter variant is kept, so the
             // HUD reserves caret room and blinks through the hold — while
-            // --typewriter 0 builds a real Instant and does neither. For no
-            // typewriter the kind must say so.
+            // `--reveal instant` builds a real Instant and does neither. For
+            // no typewriter the kind must say so.
+            //
+            // The command line lands here too, so `--reveal 'cps=0'` is
+            // refused in the same words rather than quietly meaning something
+            // else than the config file means by it.
             anyhow::ensure!(cps > 0.0, "reveal.cps must be positive, got {cps}");
         }
         anyhow::ensure!(
@@ -507,8 +530,12 @@ fn config_path(xdg: Option<OsString>, home: Option<OsString>) -> Option<PathBuf>
     Some(base.join("wayhud").join("config.toml"))
 }
 
+/// The compiled-in typing speed, also the one a flag falls back to when it
+/// switches a typewriter on over a preset that had none.
+pub const DEFAULT_CPS: f64 = 28.0;
+
 fn d_cps() -> f64 {
-    28.0
+    DEFAULT_CPS
 }
 fn d_cursor() -> bool {
     true
