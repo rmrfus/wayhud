@@ -243,6 +243,20 @@ fn run() -> Result<ExitCode> {
             }
         })?;
     }
+    // A clock of its own, because the animation has none: phases advance on
+    // frame callbacks, and a compositor stops sending those to a surface it is
+    // not showing -- a locked screen, a blanked output, a disabled monitor.
+    // Waiting for a frame that is not coming leaves the process up for ever,
+    // so a keybinding or a cron job pressed while the screen is locked leaks
+    // one every time it fires. The slack is for a compositor that is merely
+    // slow rather than silent.
+    glib::timeout_add_local_once(
+        Duration::from_secs_f64(total / 1000.0) + Duration::from_secs(2),
+        {
+            let main_loop = main_loop.clone();
+            move || main_loop.quit()
+        },
+    );
     main_loop.run();
     for handle in playing.borrow_mut().drain(..) {
         let _ = handle.join();

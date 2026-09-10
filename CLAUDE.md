@@ -80,6 +80,10 @@ the staged tree. Keep `--locked` and `-D warnings` in build and lint commands.
   it undoes the whole block. Folding the cutoff into the mask silenced the
   untype for every message but the last.
 - Keep `block_life` deterministic; rerolling per frame produces static.
+- One-shot needs a clock of its own. Phases advance on frame callbacks, and a
+  compositor sends none to a surface it is not showing -- a locked screen, a
+  blanked output -- so without a wall-clock backstop the process waits for a
+  frame that never comes and a keybinding leaks one per press.
 - Redraw only on state changes; static text must not reshape at 60 fps.
   Cache glow by visible count so it follows reveal and untype steps.
 - Blur in `f32`, quantising only at the end. Per-pass bytes gave
