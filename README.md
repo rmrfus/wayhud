@@ -15,7 +15,7 @@ keyboard focus.
 ```sh
 wayhud "SYSTEM ONLINE"
 wayhud -o all -t 10 --position top "BUILD FAILED"
-wayhud --vanish 'untype,ms=900' "THIS MESSAGE WILL SELF DESTRUCT"
+wayhud --vanish 'untype,cps=20' "THIS MESSAGE WILL SELF DESTRUCT"
 journalctl -n 3 -u nginx | wayhud --reveal instant --color '#fb4934'
 wayhud --scanlines '4,strength=0.5' --glow '#33ff33' --color '#33ff33' "ONLINE"
 ```
@@ -85,7 +85,7 @@ See `man 1 wayhud` for CLI details and `man 5 wayhud` for configuration.
 | `--lines`       | —         | Height of the block in lines                                       |
 | `--line-align`  | —         | `left`, `center`, `right` — lines inside the block                 |
 | `--reveal`      | —         | `instant` or `typewriter`; `cps=`, `cursor=`, `jitter=`, `scroll=` |
-| `--vanish`      | —         | Effect name; `ms=`, and `dir=` on `wash`                           |
+| `--vanish`      | —         | Effect name; `ms=`, `cps=` on `untype`, `dir=` on `wash`           |
 | `--sound`       | —         | `on`/`off`; `freq=`, `decay_ms=`, `gain=`, `every=`                |
 | `--raw`         | —         | Literal argument (no escape expansion)                             |
 | `--config`      | XDG path  | Config file location                                               |
@@ -168,8 +168,15 @@ All effects except `instant` accept `ms=`. `wash` also accepts `dir=down`
 wayhud --vanish 'wash,dir=up,ms=700' "DONE"
 ```
 
+`untype` is timed with `cps` rather than `ms`, because it is the one effect
+that works a character at a time: a fixed duration erases a long message
+faster per character than a short one, and a listener's block, which grows,
+would vanish quicker the more it held. Three lines take three times as long as
+one, and the unit matches `reveal.cps`.
+
 Omitting `ms` preserves the preset's duration, or uses 420 ms when switching
-from instant. `--vanish 'ms=800'` changes the current effect's duration.
+from instant; `cps` falls back to 60 the same way. `--vanish 'ms=800'` changes
+the current effect's duration.
 `--vanish` no longer accepts the pre-1.0 aliases `wash-up`, `crt`, or `none`
 (for `instant`). `--outline none` and `--glow none` remain valid.
 

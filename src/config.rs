@@ -125,9 +125,14 @@ pub enum Vanish {
         dir: Dir,
     },
     /// Erase characters in reverse order, with a caret and blips.
+    ///
+    /// Timed in characters per second rather than in milliseconds, because it
+    /// is the one effect that works a character at a time: a fixed duration
+    /// erases a long message faster per character than a short one, and a
+    /// listener's block, which grows, would vanish quicker the more it held.
     Untype {
-        #[serde(default = "d_vanish_ms")]
-        ms: u64,
+        #[serde(default = "d_untype_cps")]
+        cps: f64,
     },
     /// The text falls apart into blocks, in a fixed pseudo-random order.
     Dissolve {
@@ -137,14 +142,29 @@ pub enum Vanish {
 }
 
 impl Vanish {
+    /// The duration this was configured with, for the kinds that have one.
+    /// Zero for the two that do not: `instant` takes no time, and `untype`
+    /// takes as long as the message is.
     pub fn ms(&self) -> u64 {
         match self {
-            Vanish::Instant => 0,
+            Vanish::Instant | Vanish::Untype { .. } => 0,
             Vanish::Fade { ms }
             | Vanish::Collapse { ms }
             | Vanish::Wash { ms, .. }
-            | Vanish::Untype { ms }
             | Vanish::Dissolve { ms } => *ms,
+        }
+    }
+
+    /// How long this actually takes over `chars` characters.
+    pub fn duration_ms(&self, chars: usize) -> u64 {
+        match self {
+            Vanish::Untype { cps } if *cps > 0.0 => {
+                (chars as f64 / cps * 1000.0).ceil().min(u64::MAX as f64) as u64
+            }
+            // A non-positive rate is refused by `validate`; nothing to erase
+            // over is simply nothing to wait for.
+            Vanish::Untype { .. } => 0,
+            other => other.ms(),
         }
     }
 
@@ -326,6 +346,12 @@ impl Style {
             // Use `Reveal::Instant` to disable typing; zero cps would retain
             // caret behaviour.
             anyhow::ensure!(cps > 0.0, "reveal.cps must be positive, got {cps}");
+        }
+        if let Vanish::Untype { cps } = self.vanish {
+            anyhow::ensure!(
+                cps.is_finite() && cps > 0.0,
+                "vanish.cps must be a positive number, got {cps}"
+            );
         }
         anyhow::ensure!(
             self.vanish.ms() <= MAX_LIFETIME_MS,
@@ -516,6 +542,15 @@ fn d_cursor() -> bool {
 }
 /// Default vanish duration when the preset has none.
 pub const DEFAULT_VANISH_MS: u64 = 420;
+
+/// The compiled-in erase rate, in characters per second. Faster than the
+/// typing default: untype is a machine undoing the text, not a person typing
+/// it.
+pub const DEFAULT_UNTYPE_CPS: f64 = 60.0;
+
+fn d_untype_cps() -> f64 {
+    DEFAULT_UNTYPE_CPS
+}
 
 fn d_vanish_ms() -> u64 {
     DEFAULT_VANISH_MS
@@ -935,13 +970,15 @@ mod tests {
 
     #[test]
     fn every_vanish_reports_its_duration() {
-        // Every timed variant must contribute its duration to the timeline.
+        // Every variant with a configured duration must contribute it.
+        // Untype has none: it is timed per character, so what it takes is
+        // known only once there is a message to erase.
         for (toml_kind, want) in [
             ("instant", 0),
             ("fade", 420),
             ("collapse", 420),
             ("wash", 420),
-            ("untype", 420),
+            ("untype", 0),
             ("dissolve", 420),
         ] {
             let c: Config = toml::from_str(&format!(
@@ -949,6 +986,49 @@ mod tests {
             ))
             .unwrap();
             assert_eq!(c.style("a").unwrap().vanish.ms(), want, "{toml_kind}");
+        }
+    }
+
+    #[test]
+    fn untype_takes_as_long_as_the_message_is() {
+        // The point of timing it per character: a block that has grown must
+        // not be erased quicker than a short one was.
+        let c: Config =
+            toml::from_str("[style.a]\nvanish = { kind = \"untype\", cps = 10 }\n").unwrap();
+        let v = c.style("a").unwrap().vanish;
+        assert_eq!(v.duration_ms(10), 1000);
+        assert_eq!(
+            v.duration_ms(30),
+            3000,
+            "three times the text, three times the time"
+        );
+        assert_eq!(v.duration_ms(0), 0);
+    }
+
+    #[test]
+    fn untype_is_not_timed_in_milliseconds() {
+        // The field it took before; refused with the one that replaces it
+        // rather than ignored.
+        // The file parses into raw tables; the variant's fields are checked
+        // when the preset is resolved.
+        let c: Config =
+            toml::from_str("[style.a]\nvanish = { kind = \"untype\", ms = 900 }\n").unwrap();
+        let err = c.style("a").expect_err("ms on untype must be refused");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("unknown field `ms`") && msg.contains("cps"),
+            "{msg}"
+        );
+    }
+
+    #[test]
+    fn a_non_positive_untype_rate_is_rejected() {
+        for spec in ["cps = 0", "cps = -5"] {
+            let c: Config = toml::from_str(&format!(
+                "[style.a]\nvanish = {{ kind = \"untype\", {spec} }}\n"
+            ))
+            .unwrap();
+            assert!(c.style("a").is_err(), "{spec} passed validation");
         }
     }
 }

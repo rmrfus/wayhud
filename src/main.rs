@@ -214,8 +214,9 @@ fn run() -> Result<ExitCode> {
         move || {
             if let Some((reveal, vanish)) = tracks.borrow_mut().take() {
                 let mut handles = playing.borrow_mut();
-                handles.extend(sound::play_detached(reveal, Duration::ZERO));
-                handles.extend(sound::play_detached(vanish, vanish_delay));
+                let once = sound::Generation::default();
+                handles.extend(sound::play_detached(reveal, Duration::ZERO, &once));
+                handles.extend(sound::play_detached(vanish, vanish_delay, &once));
             }
         }
     });
@@ -329,14 +330,16 @@ fn listen(mut style: Style, spec: OutputSpec, path: PathBuf) -> Result<ExitCode>
 
     let tracks: Rc<RefCell<Option<Tracks>>> = Rc::new(RefCell::new(None));
     let playing: Rc<RefCell<Vec<std::thread::JoinHandle<()>>>> = Rc::new(RefCell::new(Vec::new()));
+    let audio_gen = sound::Generation::default();
     let on_first_frame: Rc<dyn Fn()> = Rc::new({
         let tracks = tracks.clone();
         let playing = playing.clone();
+        let audio_gen = audio_gen.clone();
         move || {
             if let Some(t) = tracks.borrow_mut().take() {
                 let mut handles = playing.borrow_mut();
-                handles.extend(sound::play_detached(t.reveal, Duration::ZERO));
-                handles.extend(sound::play_detached(t.vanish, t.delay));
+                handles.extend(sound::play_detached(t.reveal, Duration::ZERO, &audio_gen));
+                handles.extend(sound::play_detached(t.vanish, t.delay, &audio_gen));
                 // A listener runs for days; finished threads must not pile up.
                 handles.retain(|h| !h.is_finished());
             }
@@ -355,6 +358,7 @@ fn listen(mut style: Style, spec: OutputSpec, path: PathBuf) -> Result<ExitCode>
         let session = session.clone();
         let tracks = tracks.clone();
         let live = live.clone();
+        let audio_gen = audio_gen.clone();
         move |text: String, shown: usize| {
             let hud = Hud::new(style.clone(), text, seed()).map(|mut h| {
                 h.timeline = timeline::Timeline::resuming(
@@ -374,6 +378,9 @@ fn listen(mut style: Style, spec: OutputSpec, path: PathBuf) -> Result<ExitCode>
                     return;
                 }
             };
+            // The message that was up is gone, and so is the untype track
+            // waiting to erase it.
+            audio_gen.bump();
             *tracks.borrow_mut() = Some(mix(&hud));
             *live.borrow_mut() = Some(Live {
                 hud: hud.clone(),
@@ -432,20 +439,33 @@ fn arrived(
     });
     match phase {
         // Growing: the block gains a line and the hold starts again from it.
-        Some((current, Phase::Reveal { .. } | Phase::Hold, _)) => {
+        Some((current, phase @ (Phase::Reveal { .. } | Phase::Hold), _)) => {
+            // How much of the old block is actually on screen. Counting all of
+            // it instead would hand the new timeline a block it thinks is
+            // already typed, and the half-written line would snap to finished
+            // the instant the next message landed.
+            let revealed = match phase {
+                Phase::Reveal { chars } => chars,
+                _ => current.chars().count(),
+            };
             let mut lines = block_lines(&current);
             lines.push(text);
             let over = lines.len().saturating_sub(cap);
+            let dropped: usize = lines[..over].iter().map(|l| l.chars().count() + 1).sum();
             lines.drain(..over);
             let kept = lines[..lines.len() - 1].join("\n");
             // The separator counts as shown too, or the new line would be
             // typed starting with the newline before it.
-            let shown = if kept.is_empty() {
+            let whole = if kept.is_empty() {
                 0
             } else {
                 kept.chars().count() + 1
             };
-            put(lines.join("\n"), shown);
+            // Dropping lines from the top shifts every index under it.
+            put(
+                lines.join("\n"),
+                revealed.saturating_sub(dropped).min(whole),
+            );
         }
         // A vanish is a commit point: let it finish, then start afresh.
         Some((_, Phase::Vanish { .. }, remaining)) => {
@@ -818,20 +838,47 @@ fn parse_vanish(spec: &str, current: &Vanish) -> Result<Vanish> {
     let mut s = Spec::parse("--vanish", spec)?;
     let kind = s.headline("kind")?;
     let ms = s.take_parsed::<u64>("ms")?;
+    let cps = s.take_parsed::<f64>("cps")?;
     let dir_word = s.take("dir");
     let dir = dir_word.map(parse_dir).transpose()?;
     s.finish()?;
 
     let kind = kind.unwrap_or_else(|| current.kind());
-    // Reject duration on instant before parsing its value.
+    // Reject the other fields on instant before parsing their values.
     if kind == "instant" {
         anyhow::ensure!(
-            ms.is_none() && dir.is_none(),
+            ms.is_none() && cps.is_none() && dir.is_none(),
             "--vanish instant takes no other fields; it happens on one frame"
         );
         return Ok(Vanish::Instant);
     }
-    // Use the built-in duration when switching from instant.
+    if kind == "untype" {
+        // Untype erases a character at a time, so it is timed like typing.
+        anyhow::ensure!(
+            ms.is_none(),
+            "--vanish untype is timed in characters per second, not \
+             milliseconds; say --vanish 'untype,cps=60'"
+        );
+        anyhow::ensure!(
+            dir.is_none(),
+            "--vanish: dir only applies to wash, not to untype"
+        );
+        // Inherit the rate only from untype: nothing else has one.
+        let keep = match *current {
+            Vanish::Untype { cps } => cps,
+            _ => config::DEFAULT_UNTYPE_CPS,
+        };
+        return Ok(Vanish::Untype {
+            cps: cps.unwrap_or(keep),
+        });
+    }
+    anyhow::ensure!(
+        cps.is_none(),
+        "--vanish: cps only applies to untype, not to {kind}; \
+         say --vanish 'untype,cps={}' to switch the effect too",
+        cps.unwrap_or(config::DEFAULT_UNTYPE_CPS)
+    );
+    // Use the built-in duration when switching from a kind that has none.
     let ms = ms.unwrap_or(match current.ms() {
         0 => config::DEFAULT_VANISH_MS,
         keep => keep,
@@ -848,7 +895,6 @@ fn parse_vanish(spec: &str, current: &Vanish) -> Result<Vanish> {
     Ok(match kind {
         "fade" => Vanish::Fade { ms },
         "collapse" => Vanish::Collapse { ms },
-        "untype" => Vanish::Untype { ms },
         "dissolve" => Vanish::Dissolve { ms },
         "wash" => Vanish::Wash {
             ms,
@@ -1228,6 +1274,53 @@ mod tests {
         assert_eq!(
             with("--vanish", "fade,ms=250").unwrap().vanish,
             Vanish::Fade { ms: 250 }
+        );
+    }
+
+    #[test]
+    fn untype_is_timed_in_characters_per_second() {
+        assert_eq!(
+            with("--vanish", "untype,cps=25").unwrap().vanish,
+            Vanish::Untype { cps: 25.0 }
+        );
+        // Switching to untype from a kind with a duration takes the built-in
+        // rate: milliseconds do not convert into a rate without a message.
+        let mut s = Style {
+            vanish: Vanish::Fade { ms: 900 },
+            ..Style::default()
+        };
+        let cli = Cli::parse_from(["wayhud", "x", "--vanish", "untype"]);
+        apply_overrides(&mut s, &cli).unwrap();
+        assert_eq!(
+            s.vanish,
+            Vanish::Untype {
+                cps: config::DEFAULT_UNTYPE_CPS
+            }
+        );
+        // And a rate-only spec keeps untype rather than restating the kind.
+        let mut s = Style {
+            vanish: Vanish::Untype { cps: 40.0 },
+            ..Style::default()
+        };
+        let cli = Cli::parse_from(["wayhud", "x", "--vanish", "cps=12"]);
+        apply_overrides(&mut s, &cli).unwrap();
+        assert_eq!(s.vanish, Vanish::Untype { cps: 12.0 });
+    }
+
+    #[test]
+    fn the_two_timings_are_not_interchangeable() {
+        // Each is refused with the one that replaces it, not just refused.
+        let e = with("--vanish", "untype,ms=900").unwrap_err().to_string();
+        assert!(e.contains("cps"), "{e}");
+        let e = with("--vanish", "fade,cps=30").unwrap_err().to_string();
+        assert!(e.contains("untype"), "{e}");
+        // A non-positive rate is caught by the same ranges the file goes
+        // through.
+        assert!(
+            with("--vanish", "untype,cps=0")
+                .unwrap()
+                .validate()
+                .is_err()
         );
     }
 

@@ -115,7 +115,7 @@ impl Timeline {
                 .collect(),
             chars,
             hold_ms: timeout_ms as f64,
-            vanish_ms: vanish.ms() as f64,
+            vanish_ms: vanish.duration_ms(chars) as f64,
             untype: vanish.is_untype(),
         }
     }
@@ -319,7 +319,7 @@ mod tests {
 
     #[test]
     fn untype_blips_run_backwards_and_are_vanish_relative() {
-        let tl = timeline("abcd", &tw(10.0), 1000, &Vanish::Untype { ms: 400 });
+        let tl = timeline("abcd", &tw(10.0), 1000, &Vanish::Untype { cps: 10.0 });
         // reveal 400 ms + hold 1000 ms.
         assert!((tl.vanish_start() - 1.4).abs() < 1e-9);
         let on = tl.vanish_onsets(1);
@@ -333,14 +333,14 @@ mod tests {
     #[test]
     fn a_huge_hold_does_not_inflate_the_vanish_onsets() {
         // A long hold must not add silence to the mixed track.
-        let tl = timeline("ab", &tw(10.0), 3_600_000, &Vanish::Untype { ms: 200 });
+        let tl = timeline("ab", &tw(10.0), 3_600_000, &Vanish::Untype { cps: 10.0 });
         assert!(tl.vanish_onsets(1).iter().all(|&t| t <= 0.2));
     }
 
     #[test]
     fn an_untype_blip_lands_when_its_character_disappears() {
         // Each blip coincides with removal of its character.
-        let tl = timeline("abcdef", &tw(10.0), 0, &Vanish::Untype { ms: 600 });
+        let tl = timeline("abcdef", &tw(10.0), 0, &Vanish::Untype { cps: 10.0 });
         let onsets = tl.vanish_onsets(1);
         for (i, t) in onsets.iter().enumerate() {
             let p = t * 1000.0 / 600.0;

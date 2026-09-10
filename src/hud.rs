@@ -1171,7 +1171,7 @@ mod tests {
         jitter: 0.0,
         scroll: false,
     };
-    const UNTYPE: Vanish = Vanish::Untype { ms: 300 };
+    const UNTYPE: Vanish = Vanish::Untype { cps: 60.0 };
     const FADE: Vanish = Vanish::Fade { ms: 300 };
 
     #[test]

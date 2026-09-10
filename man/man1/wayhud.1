@@ -254,7 +254,12 @@ How the text goes away. The bare value is the kind:
 Fields:
 .B ms
 (duration; not accepted on
-.BR instant ),
+.B instant
+or
+.BR untype ),
+.B cps
+(erase rate, only on
+.BR untype ),
 .B dir
 .RB ( up / down ,
 only on
@@ -276,7 +281,13 @@ A soft edge sweeps through the text and erases it as it passes.
 .TP
 .B untype
 Erase characters in reverse order with sound and a caret, including after
-an instant reveal.
+an instant reveal. Timed with
+.B cps
+rather than
+.BR ms :
+it erases a character at a time, so a fixed duration would take a long
+message apart faster per character than a short one. Three lines then take
+three times as long as one.
 .TP
 .B dissolve
 The text falls apart into blocks, in a fixed pseudo\-random order.
@@ -286,7 +297,12 @@ Omitting
 .B ms
 preserves the preset's duration, or uses 420 ms when switching from instant.
 .B \-\-vanish ms=800
-changes only the duration.
+changes only the duration. On
+.B untype
+the same goes for
+.BR cps ,
+which falls back to 60 when switching from an effect that has no rate:
+milliseconds do not convert into one without a message to measure.
 .TP
 .BR \-\-sound " \fISPEC\fR"
 The typewriter blip. The bare value is
@@ -490,7 +506,7 @@ echo \(dq$(uptime)\(dq | wayhud \-\-reveal instant \-\-sound off
 Self\-destructing note:
 .nf
 .ft B
-wayhud \-s spy \-\-vanish \(aquntype,ms=900\(aq \e
+wayhud \-s spy \-\-vanish \(aquntype,cps=20\(aq \e
        \(dqTHIS MESSAGE WILL SELF DESTRUCT\(dq
 .ft R
 .fi

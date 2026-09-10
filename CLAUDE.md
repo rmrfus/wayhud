@@ -69,6 +69,12 @@ the staged tree. Keep `--locked` and `-D warnings` in build and lint commands.
   grows from 21% of the stem at 72pt to 62% at 24pt.
 - Group stroke and fill before masking; separate masks leave the outline
   visible after the fill disappears.
+- `untype` is timed in `cps`, not `ms`: it erases a character at a time, so a
+  fixed duration takes a long message apart faster per character than a short
+  one, and a listener's block erases quicker the more it holds.
+- A listener resumes from what is actually revealed, not from the length of
+  the block: counting all of it snaps a half-typed line to finished the moment
+  the next message lands.
 - Keep `block_life` deterministic; rerolling per frame produces static.
 - Redraw only on state changes; static text must not reshape at 60 fps.
   Cache glow by visible count so it follows reveal and untype steps.

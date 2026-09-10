@@ -46,7 +46,7 @@ sound = { enabled = false }
 [style.spy]
 color = "#8ec07c"           # gruvbox bright aqua
 reveal = { kind = "typewriter", cps = 18, cursor = true, jitter = 0.35 }
-vanish = { kind = "untype", ms = 900 }
+vanish = { kind = "untype", cps = 20 }
 
 # For `wayhud --listen`. width and lines reserve the block, so the surface
 # stays put while messages accumulate into it; scroll keeps the newest at the

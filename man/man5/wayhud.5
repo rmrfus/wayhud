@@ -343,9 +343,22 @@ A table with a
 .B kind
 key. Every variant except
 .B instant
+and
+.B untype
 takes
 .B ms
 (integer, default 420) for its duration.
+.PP
+.B untype
+takes
+.B cps
+(float, default 60) instead, because it is the one effect that works a
+character at a time. A fixed duration would erase a long message faster per
+character than a short one, and a listener's block, which grows as messages
+arrive, would vanish quicker the more it held. Timing it as a rate makes three
+lines take three times as long as one, and matches
+.B reveal.cps
+so that typing in and erasing out are stated in the same unit.
 .TP
 .B instant
 Gone on the frame the hold expires.
@@ -367,7 +380,10 @@ of
 .TP
 .B untype
 Erase characters in reverse order with sound and a caret, including after
-an instant reveal.
+an instant reveal. Takes
+.B cps
+rather than
+.BR ms .
 .TP
 .B dissolve
 Disappear in blocks with fixed pseudo\-random lifetimes.
@@ -445,7 +461,7 @@ vanish = { kind = "wash", ms = 300, dir = "up" }
 [style.spy]
 color = "#8ec07c"
 reveal = { kind = "typewriter", cps = 18, cursor = true }
-vanish = { kind = "untype", ms = 900 }
+vanish = { kind = "untype", cps = 20 }
 
 # Scroll from the bottom-left corner.
 [style.boot]

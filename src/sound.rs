@@ -53,20 +53,50 @@ pub fn typewriter_track(cfg: &Sound, onsets: &[f64]) -> Vec<i16> {
         .collect()
 }
 
+/// Which message a delayed track belongs to.
+///
+/// An untype track is scheduled when its message goes up but plays when the
+/// vanish begins, which for a listener may be after the message has been
+/// replaced. Bumping this drops what was scheduled for the message that went
+/// away: without it the old track fired at the old message's vanish, which
+/// was earlier, and the blips ran ahead of the text they were erasing.
+#[derive(Clone, Default)]
+pub struct Generation(std::sync::Arc<std::sync::atomic::AtomicU64>);
+
+impl Generation {
+    fn get(&self) -> u64 {
+        self.0.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Abandon everything scheduled so far.
+    pub fn bump(&self) {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
 /// Play on a worker thread after an optional delay. Return its join handle.
 /// Report audio failures without preventing display. Delaying playback avoids
 /// allocating silence for the hold before an untype vanish.
+///
+/// A delayed track checks `generation` after waiting: one-shot never bumps it,
+/// so nothing changes there.
 #[must_use = "join the handle before exiting or the tail is cut off"]
 pub fn play_detached(
     pcm: Vec<i16>,
     delay: std::time::Duration,
+    generation: &Generation,
 ) -> Option<std::thread::JoinHandle<()>> {
     if pcm.is_empty() {
         return None;
     }
+    let issued = generation.get();
+    let generation = generation.clone();
     Some(std::thread::spawn(move || {
         if !delay.is_zero() {
             std::thread::sleep(delay);
+            if generation.get() != issued {
+                return;
+            }
         }
         if let Err(e) = play(&pcm) {
             eprintln!("wayhud: audio: {e:#}");
