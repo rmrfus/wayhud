@@ -190,14 +190,18 @@ The reservation is this many line heights, taken from the font. A line of text
 is not a line on screen: pango wraps one that does not fit into as many as it
 needs, so a block of narrow
 .B width
-holds fewer messages than the count suggests. It does not clip \- the text
-scrolls, and with
-.B reveal.scroll
-the newest line stays on the bottom either way \- but the earliest of them go
-off the top sooner than the count reads.
+holds fewer of them than the count suggests.
 .IP
-This is also how many messages a listener keeps, and there it is counted in
-messages rather than in screen lines, for the same reason: see
+What overflows depends on
+.BR reveal.scroll .
+With it the block scrolls, the newest line stays on the bottom, and the
+earliest go off the top sooner than the count reads. Without it the block
+fills downwards from its top edge and the surface cuts off whatever does not
+fit.
+.IP
+A listener also keeps this many lines, counted where the newlines are rather
+than where pango puts the breaks \- one message can carry several, and does
+when a notification body has line breaks in it. See
 .B LISTENER
 in
 .BR wayhud (1).

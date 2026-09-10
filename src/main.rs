@@ -331,10 +331,11 @@ fn cap_lines(lines: &mut Vec<String>, cap: usize) -> usize {
 /// and then starts a block of its own.
 fn listen(mut style: Style, spec: OutputSpec, path: PathBuf) -> Result<ExitCode> {
     // Bound the block: without it a burst grows the surface off the screen.
-    // Counted in newlines, while the reservation `lines` sizes the surface
-    // with is counted in font metrics -- pango wraps a long line into as many
-    // screen lines as it likes, so this is a cap on messages held, not a
-    // promise about what fits. `scroll_offset` carries the overflow.
+    // Counted where the newlines are -- one message can carry several, and
+    // does when a notification body has line breaks in it -- while the
+    // reservation this same number makes is counted in font metrics, and
+    // pango wraps a long line into as many screen lines as it likes. So it
+    // caps the lines held, and is not a promise about what fits.
     // Reserved before the first message, because the layer surface is
     // negotiated once and cannot be grown into afterwards.
     let cap = *style.lines.get_or_insert(DEFAULT_LISTEN_LINES);

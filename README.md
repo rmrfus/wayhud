@@ -249,8 +249,9 @@ A few settings affect layout:
   transparent, so it costs nothing to look at. The reservation is that many
   line heights from the font, while a wrapped message occupies more screen
   lines than it has newlines — a narrow `width` therefore holds fewer than the
-  count suggests. Nothing is clipped: the block scrolls, and the earliest lines
-  leave the top sooner.
+  count suggests. What overflows depends on `reveal.scroll`: with it the block
+  scrolls and the earliest lines leave the top, without it the block fills from
+  the top and the surface edge cuts the rest off.
 - `line_align` aligns lines within the block, independently of its position.
   It only has room to work when `width` is pinned or the message wraps.
 - `scanlines = { period = 4.0, strength = 0.35, duty = 0.5 }` cuts dimmed
