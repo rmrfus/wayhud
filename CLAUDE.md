@@ -86,6 +86,12 @@ the staged tree. Keep `--locked` and `-D warnings` in build and lint commands.
   255 -> 36 -> 5 -> 1 at one pixel; thin-stroke halos disappeared.
 - Clip revealed ink before blur; clipping afterwards cut 75 from a 77 peak
   in one pixel, leaving a straight bright edge at the caret.
+- Size the glow mask from the text where it is taller than the block. A
+  reservation the text outgrew scrolls, and what the scroll reveals sits
+  below the block's own height: sized to the block, those lines come up unlit.
+- A delayed audio track must be interruptible while it plays, not only while
+  it waits. `drain` blocks without looking up, and a short track is fully
+  buffered before the last slice is written.
 - Three radius-r box passes reach 3r, not r; derive r from requested reach.
   At r=16 with 16px padding, the edge retained 38 of a 221 peak: a hard rim.
 - Clip widths starting at `-pad` must include `pad`; otherwise ink ends
