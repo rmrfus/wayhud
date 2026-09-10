@@ -399,15 +399,25 @@ The block is bounded. It keeps the last
 .B lines
 of text, or ten lines when no reservation is set, dropping from the top.
 .PP
-Reserve the block with
-.B \-\-lines
-and
-.BR \-\-width .
-Both are what stop the surface resizing as the message grows, and a surface
-that resizes is one the compositor places again on every notification.
-.B \-\-reveal \(aqscroll=true\(aq
-then reads as a terminal: the newest line stays on the bottom of the block and
-the earlier ones rise.
+.SS The block is reserved
+A listener always reserves its block, because the layer surface is negotiated
+once, before any message, and cannot be grown into afterwards. Left unset,
+.B width
+becomes the full width of the monitor and
+.B lines
+becomes ten, both clamped to the screen.
+.PP
+That is a large pane, and with
+.B scroll
+the message sits on its bottom line, so a listener started with no style at
+all puts text in a corner. Set
+.BR width ,
+.B lines
+and a smaller
+.B font
+to place it;
+.B [style.notify]
+in the shipped example config is a worked one.
 .PP
 The style is the listener's. A client sends text and nothing else, so a
 notification hook cannot decide what the overlay looks like, and the block can

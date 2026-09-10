@@ -221,18 +221,34 @@ struct Block {
 
 /// Height of the block: the `lines` reservation when the style sets one, and
 /// the measured text otherwise.
-fn block_height(style: &Style, layout: &pango::Layout, line_height: f64) -> i32 {
-    match style.lines {
+///
+/// Clamped to `budget` for the same reason the width is. A reservation taller
+/// than the monitor puts the bottom of the block off the screen, and with
+/// `scroll` the write head sits on that bottom line -- ten lines of a 72pt
+/// font is around 1080 logical pixels, which is a whole display.
+fn block_height(style: &Style, layout: &pango::Layout, line_height: f64, budget: i32) -> i32 {
+    let want = match style.lines {
         Some(n) => (line_height * n as f64).ceil() as i32,
         None => layout.pixel_size().1,
-    }
+    };
+    want.min(budget).max(1)
 }
 
-/// Width of the text block: the pinned `width` when the style sets one, and
-/// the measured text otherwise. `budget` is the wrapping budget the layout was
-/// built with, which `text_budget` has already clamped to the monitor.
-fn block_width(style: &Style, layout: &pango::Layout, budget: i32) -> i32 {
-    if style.width.is_some() {
+/// How tall the text block may be on this monitor, in logical pixels.
+fn height_budget(monitor: &gdk::Monitor, style: &Style, pad: Pad) -> i32 {
+    let margins = if style.valign == VAlign::Center {
+        0
+    } else {
+        style.margin
+    };
+    (monitor.geometry().height() - margins - (pad.y * 2.0) as i32).max(1)
+}
+
+/// Width of the text block: the wrapping budget when it is pinned, and the
+/// measured text otherwise. `budget` is what the layout was built with, which
+/// `text_budget` has already clamped to the monitor.
+fn block_width(pinned: bool, layout: &pango::Layout, budget: i32) -> i32 {
+    if pinned {
         budget
     } else {
         layout.pixel_size().0
@@ -532,6 +548,13 @@ pub fn present(
     let pad = hud.pad();
     let max_width = text_budget(monitor, &hud.style, pad);
     let device_scale = f64::from(monitor.scale_factor());
+    // A listener pins its block whether or not the style asked it to. The
+    // layer surface is negotiated once, here, before any message has arrived,
+    // so a block that followed the text would be sized from the empty message
+    // a listener starts with -- two paddings wide, which clips every message
+    // after it to about one character.
+    let pin_width = hud.style.width.is_some() || session.persistent;
+    let max_height = height_budget(monitor, &hud.style, pad);
 
     // Sized from the block, which `width` and `lines` pin when the style says
     // so. Unpinned it is the message, and a listener replacing the message
@@ -565,8 +588,8 @@ pub fn present(
         move || {
             let hud = session.hud();
             let layout = hud.layout_for(&area, max_width);
-            let width = block_width(&hud.style, &layout, max_width);
-            let height = block_height(&hud.style, &layout, hud.line_height);
+            let width = block_width(pin_width, &layout, max_width);
+            let height = block_height(&hud.style, &layout, hud.line_height, max_height);
             area.set_content_width(width + (pad.x * 2.0) as i32);
             area.set_content_height(height + (pad.y * 2.0) as i32);
             *block.borrow_mut() = Rc::new(Block {
@@ -688,8 +711,10 @@ pub fn present(
         let arm = arm.clone();
         let window = window.clone();
         move || {
-            reshape();
+            // Shown first: a size request on an unmapped widget is not laid
+            // out, and the surface keeps whatever it last negotiated.
             window.set_visible(true);
+            reshape();
             arm();
         }
     });
@@ -1257,7 +1282,7 @@ mod tests {
             let layout = bare_layout(text, &style.font);
             fit_width(&layout, 600, true);
             assert_eq!(
-                block_width(&style, &layout, 600),
+                block_width(style.width.is_some(), &layout, 600),
                 600,
                 "block followed the text for {:?}",
                 &text[..text.len().min(20)]
@@ -1275,7 +1300,7 @@ mod tests {
         fit_width(&layout, 600, false);
         let measured = layout.pixel_size().0;
         assert!(measured > 0 && measured < 600, "measured {measured}");
-        assert_eq!(block_width(&style, &layout, 600), measured);
+        assert_eq!(block_width(style.width.is_some(), &layout, 600), measured);
     }
 
     #[test]

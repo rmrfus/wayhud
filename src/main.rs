@@ -310,11 +310,13 @@ fn block_lines(text: &str) -> Vec<String> {
 /// vanish is a commit point -- what arrives during one waits for it to finish
 /// and then starts a block of its own, so a burst cannot keep the overlay up
 /// forever.
-fn listen(style: Style, spec: OutputSpec, path: PathBuf) -> Result<ExitCode> {
+fn listen(mut style: Style, spec: OutputSpec, path: PathBuf) -> Result<ExitCode> {
     // Bound the block: without it a burst grows the surface off the screen.
     // `lines` is the reservation the surface is sized from, so it is also
     // exactly how many lines there is room for.
-    let cap = style.lines.unwrap_or(DEFAULT_LISTEN_LINES);
+    // Reserved before the first message, because the layer surface is
+    // negotiated once and cannot be grown into afterwards.
+    let cap = *style.lines.get_or_insert(DEFAULT_LISTEN_LINES);
 
     let socket = ipc::bind(&path)?;
     gtk::init().context("initialising GTK")?;

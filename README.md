@@ -281,11 +281,14 @@ what arrives during one waits for it to finish and then starts a block of its
 own, so a burst cannot hold the overlay up forever. The block keeps the last
 `lines` of text, or ten when nothing is reserved, dropping from the top.
 
-Reserve the block with `lines` and `width`. Both are what stop the surface
-resizing as the message grows, and a surface that resizes is one the
-compositor places again on every notification. With `scroll = true` it then
-reads as a terminal: the newest line stays on the bottom and earlier ones
-rise.
+A listener always reserves its block, because the layer surface is negotiated
+once — before any message — and cannot be grown into afterwards. Unset,
+`width` becomes the full monitor width and `lines` ten, both clamped to the
+screen. That is a large pane, and with `scroll = true` the message sits on its
+bottom line, so a listener started with no style at all puts text in a corner.
+Set `width`, `lines` and a smaller `font` to place it: `[style.notify]` in
+`config.example.toml` is a worked example. With `scroll = true` it reads as a
+terminal — the newest line on the bottom, earlier ones rising.
 
 The style is the listener's — a client sends text and nothing else, so a
 notification hook cannot decide what the overlay looks like, and the block can
