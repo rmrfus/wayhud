@@ -431,10 +431,18 @@ fn scanline_mask(w: i32, h: i32, sl: &Scanlines) -> Option<gtk::cairo::ImageSurf
 /// text block. Use the caret line box to handle mixed font heights.
 /// The visible count drives the offset during both reveal and untype.
 fn scroll_offset(block: &Block, text: &str, visible: usize) -> f64 {
-    let th = block.height;
+    let th = f64::from(block.height);
     let (_, cy, ch) = caret_pos(&block.layout, text, visible);
-    // Clamp rounding errors so the final line has zero offset.
-    (f64::from(th) - (cy + ch)).max(0.0)
+    let (_, text_h) = block.layout.pixel_size();
+    // Never further up than the last line needs. Where the block holds the
+    // text that bound is zero, which is the rounding clamp this had: a wobble
+    // must not lift finished text off the bottom of a surface sized to hold it
+    // exactly. Where the text has outgrown the block -- a reservation counts
+    // lines, and pango wraps each of them into as many as it likes -- the
+    // bound goes negative, and it has to: clamped at zero the block stopped
+    // scrolling and the write head went under the bottom edge.
+    let floor = (th - f64::from(text_h)).min(0.0);
+    (th - (cy + ch)).max(floor)
 }
 
 /// Visible count shared by the glyph drawing and glow mask.
@@ -1808,6 +1816,43 @@ mod tests {
             "scale 1 gave {one} bands, scale 2 gave {two}; expected about {}",
             one * 2
         );
+    }
+
+    #[test]
+    fn a_block_the_text_has_outgrown_still_scrolls() {
+        // A reservation counts newlines, and pango wraps each of them into as
+        // many screen lines as it likes, so a narrow block can hold less than
+        // it was told to. Clamped at zero the offset stopped moving and the
+        // write head went under the bottom edge.
+        let layout = bare_layout(&"word ".repeat(40), "Sans 24");
+        fit_width(&layout, 300, true);
+        let (_, text_h) = layout.pixel_size();
+        let two_lines = text_h / 8;
+        assert!(two_lines < text_h, "the text must overflow the block");
+        let block = Block {
+            layout,
+            width: 300,
+            height: two_lines,
+        };
+        let total = block.layout.text().chars().count();
+        let text = block.layout.text().to_string();
+        let at_end = scroll_offset(&block, &text, total);
+        assert!(
+            at_end < 0.0,
+            "a block shorter than its text must scroll up, got {at_end}"
+        );
+        // And never further than the last line needs.
+        assert!(
+            at_end >= f64::from(two_lines) - f64::from(text_h) - 1.0,
+            "{at_end}"
+        );
+        // A block that holds its text keeps the old rounding clamp.
+        let fits = Block {
+            layout: bare_layout("one line", "Sans 24"),
+            width: 300,
+            height: 4000,
+        };
+        assert!(scroll_offset(&fits, "one line", 8) >= 0.0);
     }
 
     #[test]

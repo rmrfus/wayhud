@@ -8,7 +8,7 @@
 //! to an unbound path returns an error immediately.
 
 use std::ffi::OsString;
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{FileTypeExt, PermissionsExt};
 use std::os::unix::net::UnixDatagram;
 use std::path::{Path, PathBuf};
 
@@ -69,17 +69,28 @@ pub fn send(path: &Path, text: &str) -> Result<()> {
 /// make this fail forever, so a path that nothing answers on is removed and
 /// rebound. Whether anything answers is decided by connecting to it, not by
 /// its presence: the file outlives the process that made it.
+///
+/// Only a socket is ever removed, and only when the connection was refused.
+/// `--socket` takes a path from the command line, and every other reason a
+/// connection can fail -- a permission, a name too long, a path that is a
+/// document -- once counted as "stale" and had the file deleted.
 pub fn bind(path: &Path) -> Result<UnixDatagram> {
-    if path.exists() {
+    if let Ok(meta) = std::fs::symlink_metadata(path) {
         anyhow::ensure!(
-            UnixDatagram::unbound()
-                .and_then(|s| s.connect(path))
-                .is_err(),
-            "another wayhud is already listening on {}",
+            meta.file_type().is_socket(),
+            "{} exists and is not a socket; refusing to remove it",
             path.display()
         );
-        std::fs::remove_file(path)
-            .with_context(|| format!("removing the stale socket {}", path.display()))?;
+        match UnixDatagram::unbound().and_then(|s| s.connect(path)) {
+            Ok(_) => anyhow::bail!("another wayhud is already listening on {}", path.display()),
+            Err(e) if e.kind() == std::io::ErrorKind::ConnectionRefused => {
+                std::fs::remove_file(path)
+                    .with_context(|| format!("removing the stale socket {}", path.display()))?;
+            }
+            Err(e) => {
+                return Err(e).with_context(|| format!("checking {}", path.display()));
+            }
+        }
     }
     let socket = UnixDatagram::bind(path).with_context(|| format!("binding {}", path.display()))?;
     // The runtime directory is already private, so this is the second lock on
@@ -187,6 +198,23 @@ mod tests {
         send(&path, "after").expect("send");
         let mut buf = vec![0u8; MAX_DATAGRAM];
         assert_eq!(recv(&socket, &mut buf).as_deref(), Some("after"));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn a_path_that_is_not_a_socket_is_never_removed() {
+        // `--socket` takes a path from the command line, and a connection to
+        // a document fails as surely as one to a dead listener.
+        let mut path = std::env::temp_dir();
+        path.push(format!("wayhud-test-doc-{}.txt", std::process::id()));
+        std::fs::write(&path, b"not a socket").expect("write");
+        let err = bind(&path).expect_err("a regular file must not be taken over");
+        assert!(err.to_string().contains("not a socket"), "{err:#}");
+        assert_eq!(
+            std::fs::read(&path).expect("still there"),
+            b"not a socket",
+            "the file was destroyed"
+        );
         let _ = std::fs::remove_file(&path);
     }
 

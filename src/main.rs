@@ -367,6 +367,7 @@ fn listen(mut style: Style, spec: OutputSpec, path: PathBuf) -> Result<ExitCode>
 
     let live: Rc<RefCell<Option<Live>>> = Rc::new(RefCell::new(None));
     let pending: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+    let flushing = Rc::new(Cell::new(false));
 
     // Put a block up, typing only what follows `shown`.
     let put: Rc<dyn Fn(String, usize)> = Rc::new({
@@ -438,7 +439,7 @@ fn listen(mut style: Style, spec: OutputSpec, path: PathBuf) -> Result<ExitCode>
                 if text.is_empty() {
                     continue;
                 }
-                arrived(&live, &pending, &put, cap, text);
+                arrived(&live, &pending, &flushing, &put, cap, text);
             }
             glib::ControlFlow::Continue
         },
@@ -453,6 +454,7 @@ fn listen(mut style: Style, spec: OutputSpec, path: PathBuf) -> Result<ExitCode>
 fn arrived(
     live: &Rc<RefCell<Option<Live>>>,
     pending: &Rc<RefCell<Vec<String>>>,
+    flushing: &Rc<Cell<bool>>,
     put: &Rc<dyn Fn(String, usize)>,
     cap: usize,
     text: String,
@@ -499,18 +501,30 @@ fn arrived(
         }
         // A vanish is a commit point: let it finish, then start afresh.
         Some((_, Phase::Vanish { .. }, remaining)) => {
-            pending.borrow_mut().push(text);
+            {
+                // Bounded on the way in, not on the way out. Only the last
+                // few lines can be shown, so holding a burst of a thousand
+                // to drop all but three of them later is a thousand strings
+                // kept for the length of an erase.
+                let mut queue = pending.borrow_mut();
+                queue.extend(block_lines(&text));
+                cap_lines(&mut queue, cap);
+            }
+            // One timer, however many arrive: each used to schedule its own,
+            // and all of them woke to find the queue already drained.
+            if flushing.replace(true) {
+                return;
+            }
             let wait = Duration::from_secs_f64((remaining.max(0.0) / 1000.0) + 0.01);
             let pending = pending.clone();
+            let flushing = flushing.clone();
             let put = put.clone();
             glib::timeout_add_local_once(wait, move || {
+                flushing.set(false);
                 let held: Vec<String> = pending.borrow_mut().drain(..).collect();
-                if held.is_empty() {
-                    return;
+                if !held.is_empty() {
+                    put(held.join("\n"), 0);
                 }
-                let mut lines = block_lines(&held.join("\n"));
-                cap_lines(&mut lines, cap);
-                put(lines.join("\n"), 0);
             });
         }
         // Nothing up, or the last block is finished.

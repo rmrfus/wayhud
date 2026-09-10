@@ -114,13 +114,14 @@ pub fn play_detached(
                 return;
             }
         }
-        if let Err(e) = play(&pcm) {
+        let abandoned = || generation.get() != issued;
+        if let Err(e) = play(&pcm, &abandoned) {
             eprintln!("wayhud: audio: {e:#}");
         }
     }))
 }
 
-fn play(pcm: &[i16]) -> Result<()> {
+fn play(pcm: &[i16], abandoned: &dyn Fn() -> bool) -> Result<()> {
     use libpulse_binding::sample::{Format, Spec};
     use libpulse_binding::stream::Direction;
     use libpulse_simple_binding::Simple;
@@ -147,7 +148,20 @@ fn play(pcm: &[i16]) -> Result<()> {
     for s in pcm {
         bytes.extend_from_slice(&s.to_le_bytes());
     }
-    simple.write(&bytes)?;
+    // Written in slices so a track that has been abandoned stops. The reveal
+    // track plays with no delay, so the generation it was issued under can
+    // change while it is sounding: a message arriving mid-typing left the old
+    // line still clicking underneath the new one.
+    const SLICE: usize = (RATE as usize / 20) * 2; // 50 ms of mono i16
+    for part in bytes.chunks(SLICE) {
+        if abandoned() {
+            // Drop what is buffered rather than draining it; the point is to
+            // stop, not to finish quietly.
+            let _ = simple.flush();
+            return Ok(());
+        }
+        simple.write(part)?;
+    }
     simple.drain()?;
     Ok(())
 }
