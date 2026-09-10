@@ -10,6 +10,8 @@ keyboard focus.
 
 [![wayhud typing a status block over the desktop, then clearing it](assets/demo.gif)](assets/demo.mp4)
 
+<sub>Demo font: [Conthrax](https://www.dafont.com/conthrax.font). The built-in default is `Monospace`.</sub>
+
 ```sh
 wayhud "SYSTEM ONLINE"
 wayhud -o all -t 10 --position top "BUILD FAILED"
