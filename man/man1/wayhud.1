@@ -286,8 +286,9 @@ an instant reveal. Timed with
 rather than
 .BR ms :
 it erases a character at a time, so a fixed duration would take a long
-message apart faster per character than a short one. Three lines then take
-three times as long as one.
+message apart faster per character than a short one. Three times the
+characters then take three times as long; lines do not come into it, since
+one may be far longer than another.
 .TP
 .B dissolve
 The text falls apart into blocks, in a fixed pseudo\-random order.
@@ -406,12 +407,17 @@ delivers and then waits for a reply that never comes, so it hangs unless
 something kills it.
 .SS What arrives, and when it goes
 A message joins the one on screen rather than replacing it. While the block is
-being revealed or held, an arrival is appended as a line, only that line is
-typed, and the hold starts again from it. A vanish is a commit point: what
-arrives during one waits for it to finish and then starts a block of its own,
-so a burst cannot hold the overlay up forever.
+being revealed or held, an arrival is appended as a line and typing carries on
+from wherever it had got to: one landing mid-line finishes that line and goes
+on into the new one, rather than restarting or snapping the old one to done.
+The hold then starts again.
 .PP
-The block is bounded. It keeps the last
+A vanish is a commit point: what arrives during one waits for it to finish and
+then starts a block of its own. That bounds a burst, but not time \- a stream
+arriving faster than the hold keeps restarting it, and the overlay stays up as
+long as the stream does.
+.PP
+What is bounded is the block. It keeps the last
 .B lines
 of text, or ten lines when no reservation is set, dropping from the top.
 .PP

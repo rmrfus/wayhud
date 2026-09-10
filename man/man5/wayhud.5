@@ -186,7 +186,18 @@ message. Set, the room is reserved up front, so a message growing inside the
 block does not resize the surface; the reserved room a message has not reached
 is transparent and not visible.
 .IP
-This is also how much a listener keeps: see
+The reservation is this many line heights, taken from the font. A line of text
+is not a line on screen: pango wraps one that does not fit into as many as it
+needs, so a block of narrow
+.B width
+holds fewer messages than the count suggests. It does not clip \- the text
+scrolls, and with
+.B reveal.scroll
+the newest line stays on the bottom either way \- but the earliest of them go
+off the top sooner than the count reads.
+.IP
+This is also how many messages a listener keeps, and there it is counted in
+messages rather than in screen lines, for the same reason: see
 .B LISTENER
 in
 .BR wayhud (1).
@@ -356,7 +367,8 @@ takes
 character at a time. A fixed duration would erase a long message faster per
 character than a short one, and a listener's block, which grows as messages
 arrive, would vanish quicker the more it held. Timing it as a rate makes three
-lines take three times as long as one, and matches
+times the characters take three times as long -- lines are not the measure,
+one being as long as it likes -- and matches
 .B reveal.cps
 so that typing in and erasing out are stated in the same unit.
 .TP

@@ -161,8 +161,8 @@ are erased. Use `scroll=false` to override a terminal-mode preset.
 | `untype`   | Erase characters in reverse order, with a caret and sound |
 | `dissolve` | Disappear in pseudo-random blocks                         |
 
-All effects except `instant` accept `ms=`. `wash` also accepts `dir=down`
-(default) or `dir=up`:
+All effects except `instant` and `untype` accept `ms=`; `untype` is timed
+with `cps=` instead. `wash` also accepts `dir=down` (default) or `dir=up`:
 
 ```sh
 wayhud --vanish 'wash,dir=up,ms=700' "DONE"
@@ -171,8 +171,9 @@ wayhud --vanish 'wash,dir=up,ms=700' "DONE"
 `untype` is timed with `cps` rather than `ms`, because it is the one effect
 that works a character at a time: a fixed duration erases a long message
 faster per character than a short one, and a listener's block, which grows,
-would vanish quicker the more it held. Three lines take three times as long as
-one, and the unit matches `reveal.cps`.
+would vanish quicker the more it held. A block of three times the characters
+now takes three times as long, and the unit matches `reveal.cps`. Lines are
+not a measure here: a long line takes longer than a short one.
 
 Omitting `ms` preserves the preset's duration, or uses 420 ms when switching
 from instant; `cps` falls back to 60 the same way. `--vanish 'ms=800'` changes
@@ -245,7 +246,11 @@ A few settings affect layout:
   nothing to look at. Clamped to the monitor.
 - `lines` reserves the block height up front, so a message growing inside it
   does not resize the surface. Reserved room a message has not reached is
-  transparent, so it costs nothing to look at.
+  transparent, so it costs nothing to look at. The reservation is that many
+  line heights from the font, while a wrapped message occupies more screen
+  lines than it has newlines — a narrow `width` therefore holds fewer than the
+  count suggests. Nothing is clipped: the block scrolls, and the earliest lines
+  leave the top sooner.
 - `line_align` aligns lines within the block, independently of its position.
   It only has room to work when `width` is pinned or the message wraps.
 - `scanlines = { period = 4.0, strength = 0.35, duty = 0.5 }` cuts dimmed
@@ -282,11 +287,17 @@ for every notification while nothing was listening. Sending to a socket nobody
 is bound to returns an error at once, which is what a hook needs.
 
 A message **joins** the one on screen rather than replacing it. While the
-block is revealing or being held, an arrival is appended as a line, only that
-line is typed, and the hold starts again from it. A vanish is a commit point:
-what arrives during one waits for it to finish and then starts a block of its
-own, so a burst cannot hold the overlay up forever. The block keeps the last
-`lines` of text, or ten when nothing is reserved, dropping from the top.
+block is revealing or being held, an arrival is appended as a line and typing
+carries on from wherever it had got to — so a message landing mid-line
+finishes that line and goes on into the new one, rather than restarting or
+snapping the old one to done. The hold then starts again.
+
+A vanish is a commit point: what arrives during one waits for it to finish
+and then starts a block of its own. That bounds a burst, but not time — a
+stream arriving faster than the hold keeps restarting it, and the overlay
+stays up as long as the stream does. What is bounded is the block, which
+keeps the last `lines` of text, or ten when nothing is reserved, dropping
+from the top.
 
 A listener always reserves its block, because the layer surface is negotiated
 once — before any message — and cannot be grown into afterwards. Unset,

@@ -109,8 +109,8 @@ struct Cli {
     reveal: Option<String>,
 
     /// How the text goes away: instant, fade, collapse, wash, untype,
-    /// dissolve. Takes ms= and, for wash, dir=up|down.
-    /// E.g. "wash,dir=up,ms=700".
+    /// dissolve. Takes ms=, cps= on untype, and dir=up|down on wash.
+    /// E.g. "wash,dir=up,ms=700" or "untype,cps=60".
     #[arg(long)]
     vanish: Option<String>,
 
@@ -320,16 +320,21 @@ fn cap_lines(lines: &mut Vec<String>, cap: usize) -> usize {
 
 /// Stay up and show what arrives on the socket.
 ///
-/// The rule is that a message joins the one on screen rather than replacing
-/// it: while the block is revealing or being held, an arrival is appended as a
-/// line and only that line is typed, and the hold starts again from it. A
-/// vanish is a commit point -- what arrives during one waits for it to finish
-/// and then starts a block of its own, so a burst cannot keep the overlay up
-/// forever.
+/// A message joins the one on screen rather than replacing it: while the block
+/// is revealing or being held, an arrival is appended as a line and typing
+/// carries on from wherever it had got to, so one landing mid-line finishes
+/// that line before going on into the new one. The hold then starts again,
+/// which means a stream arriving faster than the hold keeps the overlay up for
+/// as long as it lasts; what is bounded is the block, not the time.
+///
+/// A vanish is a commit point: what arrives during one waits for it to finish
+/// and then starts a block of its own.
 fn listen(mut style: Style, spec: OutputSpec, path: PathBuf) -> Result<ExitCode> {
     // Bound the block: without it a burst grows the surface off the screen.
-    // `lines` is the reservation the surface is sized from, so it is also
-    // exactly how many lines there is room for.
+    // Counted in newlines, while the reservation `lines` sizes the surface
+    // with is counted in font metrics -- pango wraps a long line into as many
+    // screen lines as it likes, so this is a cap on messages held, not a
+    // promise about what fits. `scroll_offset` carries the overflow.
     // Reserved before the first message, because the layer surface is
     // negotiated once and cannot be grown into afterwards.
     let cap = *style.lines.get_or_insert(DEFAULT_LISTEN_LINES);

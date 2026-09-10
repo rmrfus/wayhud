@@ -468,15 +468,14 @@ struct Frame {
     blink: Cell<bool>,
 }
 
-/// The message a set of windows is showing, and the counter that tells a
-/// window that its shaped layout is stale.
+/// The message a set of windows is showing.
 ///
-/// One-shot mode sets this once and never bumps it; a listener replaces it on
-/// every arrival. Both go through the same windows and the same drawing path,
-/// so a listener cannot drift away from what one invocation renders.
+/// One-shot mode sets this once; a listener replaces it on every arrival, and
+/// each window is told through `wake`. Both go through the same windows and
+/// the same drawing path, so a listener cannot drift away from what one
+/// invocation renders.
 pub struct Session {
     current: RefCell<Rc<Hud>>,
-    generation: Cell<u64>,
     /// A listener's windows outlive their messages: `Done` means nothing is
     /// on screen, not that the overlay is finished.
     persistent: bool,
@@ -499,7 +498,6 @@ impl Session {
     fn new(hud: Rc<Hud>, persistent: bool) -> Rc<Session> {
         Rc::new(Session {
             current: RefCell::new(hud),
-            generation: Cell::new(0),
             persistent,
             wake: RefCell::new(Vec::new()),
         })
@@ -515,7 +513,6 @@ impl Session {
         {
             *self.current.borrow_mut() = hud;
         }
-        self.generation.set(self.generation.get().wrapping_add(1));
         for wake in self.wake.borrow().iter() {
             wake();
         }

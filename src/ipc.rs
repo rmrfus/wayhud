@@ -31,7 +31,7 @@ pub fn default_path() -> Result<PathBuf> {
 /// the same reason `config_path` is split out of `default_path`.
 ///
 /// There is deliberately no fallback to a world-writable directory. The
-/// config file falls back to `$HOME/.config` when `XDG_RUNTIME_DIR` is
+/// config file falls back to `$HOME/.config` when `XDG_CONFIG_HOME` is
 /// unusable, but a socket is not a file to read: anyone who can reach it can
 /// put text on the screen. `XDG_RUNTIME_DIR` is per-user and 0700, and if it
 /// is missing the answer is to say so rather than to bind somewhere shared.
