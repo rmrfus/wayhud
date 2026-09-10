@@ -370,11 +370,18 @@ takes
 (float, default 60) instead, because it is the one effect that works a
 character at a time. A fixed duration would erase a long message faster per
 character than a short one, and a listener's block, which grows as messages
-arrive, would vanish quicker the more it held. Timing it as a rate makes three
-times the characters take three times as long -- lines are not the measure,
-one being as long as it likes -- and matches
+arrive, would vanish quicker the more it held. Timing it as a rate makes a
+longer message take proportionally longer -- lines are not the measure, one
+being as long as it likes -- and matches
 .B reveal.cps
 so that typing in and erasing out are stated in the same unit.
+.PP
+The erase runs for
+.RI ( chars " + 1) / " cps
+seconds: a beat for each character taken off, and one more with the block
+empty. Without that last beat the final character leaves with the overlay
+rather than being erased off it, and stands a beat longer than every other
+for it.
 .PP
 A rate is not resolved beyond the refresh rate of the output. At 60 characters
 per second a character lasts about 17 ms, which on a 60 Hz screen is one

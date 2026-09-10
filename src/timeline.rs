@@ -175,8 +175,9 @@ impl Timeline {
         if !self.untype || self.vanish_ms <= 0.0 || self.chars == 0 {
             return Vec::new();
         }
-        // Erase at a constant rate.
-        let step = self.vanish_ms / self.chars as f64 / 1000.0;
+        // Erase at a constant rate, on the same beats `untype_visible` uses:
+        // a blip has to land on the frame its character leaves.
+        let step = self.vanish_ms / (self.chars + 1) as f64 / 1000.0;
         self.blip_indices(every.max(1))
             // Erased from the end: the last character goes first.
             .map(|i| (self.chars - i) as f64 * step)
@@ -191,7 +192,14 @@ impl Timeline {
     /// Visible character count during untype, matched to `vanish_onsets`
     /// timing.
     pub fn untype_visible(&self, p: f64) -> usize {
-        (((1.0 - p) * self.chars as f64).ceil() as usize).min(self.chars)
+        // `chars + 1` beats: one per character removed, and a last one with
+        // the block empty. `phase_at` never reports p as 1, so a mapping that
+        // only reached zero there never reached it at all -- the final
+        // character was taken away by the overlay ending instead of by the
+        // erase, and stood a beat longer than every other for it.
+        let beats = self.chars + 1;
+        let gone = (p * beats as f64).floor().max(0.0) as usize;
+        self.chars.saturating_sub(gone)
     }
 
     /// Everything from t0 to the frame the window closes.
@@ -384,6 +392,48 @@ mod tests {
         // A long hold must not add silence to the mixed track.
         let tl = timeline("ab", &tw(10.0), 3_600_000, &Vanish::Untype { cps: 10.0 });
         assert!(tl.vanish_onsets(1).iter().all(|&t| t <= 0.2));
+    }
+
+    #[test]
+    fn the_erase_reaches_an_empty_block_before_the_phase_ends() {
+        // `phase_at` never reports p as 1: at the end of the vanish the phase
+        // is already Done. A mapping that only emptied the block there emptied
+        // it never -- the last character was taken away by the overlay
+        // ending, so it stood a beat longer than every other one.
+        let tl = timeline("test", &tw(50.0), 0, &Vanish::Untype { cps: 10.0 });
+        let mut seen = Vec::new();
+        let mut prev = usize::MAX;
+        for i in 0..1000 {
+            let p = f64::from(i) / 1000.0;
+            let v = tl.untype_visible(p);
+            if v != prev {
+                seen.push((p, v));
+                prev = v;
+            }
+        }
+        let counts: Vec<usize> = seen.iter().map(|&(_, v)| v).collect();
+        assert_eq!(counts, [4, 3, 2, 1, 0], "{seen:?}");
+        // Five beats of one fifth each: no character lingers longer than the
+        // rest, and the empty block gets a beat of its own.
+        for (n, &(p, _)) in seen.iter().enumerate() {
+            let want = n as f64 / 5.0;
+            assert!((p - want).abs() < 0.01, "beat {n} at {p}, wanted {want}");
+        }
+    }
+
+    #[test]
+    fn every_untype_blip_lands_on_the_beat_its_character_leaves() {
+        // The sound has to move with the picture, so both count beats the
+        // same way; they used to divide the vanish by different numbers.
+        let tl = timeline("test", &tw(50.0), 0, &Vanish::Untype { cps: 10.0 });
+        let total_s = tl.vanish_ms / 1000.0;
+        for (i, onset) in tl.vanish_onsets(1).iter().enumerate() {
+            // Indexed by character, not by erase order: character `i` is the
+            // one leaving, so exactly `i` are left behind it.
+            let p = onset / total_s;
+            let after = tl.untype_visible(p + 1e-6);
+            assert_eq!(after, i, "blip {i} at p={p:.3} leaves {after} showing");
+        }
     }
 
     #[test]

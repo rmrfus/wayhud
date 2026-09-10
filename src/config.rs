@@ -158,8 +158,16 @@ impl Vanish {
     /// How long this actually takes over `chars` characters.
     pub fn duration_ms(&self, chars: usize) -> u64 {
         match self {
+            Vanish::Untype { .. } if chars == 0 => 0,
             Vanish::Untype { cps } if *cps > 0.0 => {
-                (chars as f64 / cps * 1000.0).ceil().min(u64::MAX as f64) as u64
+                // One beat per character, and one more for the block once the
+                // last of them is gone. Without that beat the final erase is
+                // not an erase at all: the phase ends on it, so the character
+                // leaves with the whole overlay rather than being taken off
+                // it, which reads as the erase stalling before the end.
+                ((chars + 1) as f64 / cps * 1000.0)
+                    .ceil()
+                    .min(u64::MAX as f64) as u64
             }
             // A non-positive rate is refused by `validate`; nothing to erase
             // over is simply nothing to wait for.
@@ -1019,12 +1027,16 @@ mod tests {
         let c: Config =
             toml::from_str("[style.a]\nvanish = { kind = \"untype\", cps = 10 }\n").unwrap();
         let v = c.style("a").unwrap().vanish;
-        assert_eq!(v.duration_ms(10), 1000);
+        // One beat per character at the rate asked for, and one more with the
+        // block empty: without it the last character leaves with the overlay
+        // instead of being erased off it.
+        assert_eq!(v.duration_ms(10), 1100);
         assert_eq!(
             v.duration_ms(30),
-            3000,
-            "three times the text, three times the time"
+            3100,
+            "longer text, proportionally longer"
         );
+        // Nothing to erase is no beats at all, not one.
         assert_eq!(v.duration_ms(0), 0);
     }
 

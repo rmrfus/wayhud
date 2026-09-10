@@ -171,9 +171,14 @@ wayhud --vanish 'wash,dir=up,ms=700' "DONE"
 `untype` is timed with `cps` rather than `ms`, because it is the one effect
 that works a character at a time: a fixed duration erases a long message
 faster per character than a short one, and a listener's block, which grows,
-would vanish quicker the more it held. A block of three times the characters
-now takes three times as long, and the unit matches `reveal.cps`. Lines are
-not a measure here: a long line takes longer than a short one.
+would vanish quicker the more it held. A longer block now takes
+proportionally longer, and the unit matches `reveal.cps`. Lines are not a
+measure here: a long line takes longer than a short one.
+
+The erase runs for `(chars + 1) / cps` seconds — a beat for each character
+taken off, and one more with the block empty. Without that last beat the final
+character leaves with the overlay rather than being erased off it, and stands
+a beat longer than every other for it.
 
 Omitting `ms` preserves the preset's duration, or uses 420 ms when switching
 from instant; `cps` falls back to 60 the same way. `--vanish 'ms=800'` changes

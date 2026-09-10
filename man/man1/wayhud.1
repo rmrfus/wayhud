@@ -286,9 +286,13 @@ an instant reveal. Timed with
 rather than
 .BR ms :
 it erases a character at a time, so a fixed duration would take a long
-message apart faster per character than a short one. Three times the
-characters then take three times as long; lines do not come into it, since
-one may be far longer than another.
+message apart faster per character than a short one. A longer message then
+takes proportionally longer; lines do not come into it, since one may be far
+longer than another. The erase runs for
+.RI ( chars " + 1) / " cps
+seconds \- a beat per character, and one more with the block empty, without
+which the last character would leave with the overlay instead of being erased
+off it.
 .TP
 .B dissolve
 The text falls apart into blocks, in a fixed pseudo\-random order.
