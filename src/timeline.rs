@@ -262,6 +262,36 @@ mod tests {
     }
 
     #[test]
+    fn a_block_grown_from_three_messages_erases_all_of_itself_with_sound() {
+        // What a listener actually builds: each arrival resumes from what the
+        // one before it had revealed. The erase has to click for every
+        // character of the result, not for the last arrival's share of it.
+        let mut text = String::new();
+        let mut shown = 0usize;
+        let mut tl = None;
+        for line in ["one", "two", "three"] {
+            if !text.is_empty() {
+                shown = text.chars().count() + 1;
+                text.push('\n');
+            }
+            text.push_str(line);
+            tl = Some(Timeline::resuming(
+                &text,
+                &tw(10.0),
+                500,
+                &Vanish::Untype { cps: 10.0 },
+                1,
+                shown,
+            ));
+        }
+        let tl = tl.expect("built");
+        // Every non-whitespace character clicks; the two newlines do not.
+        assert_eq!(tl.vanish_onsets(1).len(), "onetwothree".len());
+        // The last reveal still only typed the line that arrived.
+        assert_eq!(tl.onsets(1).len(), "three".len());
+    }
+
+    #[test]
     fn a_resumed_block_does_not_blip_for_what_is_already_up() {
         // A step of zero would fire every earlier character's blip at t0.
         let tl = Timeline::resuming("abcdef", &tw(10.0), 0, &Vanish::Instant, 1, 4);
