@@ -8,7 +8,7 @@ Text overlays for sway, with typewriter animation, a caret, synthesised sound,
 scanlines and exit effects. The overlay is click-through and does not take
 keyboard focus.
 
-![wayhud typing a message, then dissolving](assets/demo.gif)
+[![wayhud typing a status block over the desktop, then clearing it](assets/demo.gif)](assets/demo.mp4)
 
 ```sh
 wayhud "SYSTEM ONLINE"
