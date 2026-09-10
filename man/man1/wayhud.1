@@ -200,6 +200,12 @@ wrap to the monitor and the surface is sized from the measured text. Set, it
 is both the wrapping budget and the width of the block, so the surface keeps
 that width whatever the message. Clamped to the monitor.
 .TP
+.BR \-\-lines " \fIN\fR"
+Height of the text block in lines. Unset, the surface is sized from the
+message. Set, the room is reserved up front, so a message growing inside the
+block does not resize the surface. Since the surface is transparent, reserved
+room a message has not reached is not visible.
+.TP
 .BR \-\-line\-align " \fIALIGN\fR"
 Alignment of the lines within the text block:
 .BR left ,
@@ -301,6 +307,24 @@ Fields:
 .IP
 Switching sound on or off preserves its other parameters.
 .TP
+.B \-\-listen
+Stay up and show what arrives on the socket, instead of showing one message
+and exiting. Takes no
+.IR TEXT .
+See
+.B LISTENER
+below.
+.TP
+.B \-\-send
+Send
+.I TEXT
+to a running listener instead of showing it here, and exit. The style belongs
+to the listener, so every other flag is ignored.
+.TP
+.BR \-\-socket " \fIPATH\fR"
+Socket to listen on or send to. Default:
+.IR $XDG_RUNTIME_DIR/wayhud.sock .
+.TP
 .B \-\-raw
 Take
 .I TEXT
@@ -333,6 +357,66 @@ Both modes use a fixed surface sized for the complete message and work with
 any position. Single-line messages render identically. During
 .BR untype ,
 the scroll reverses as lines are erased.
+.SH LISTENER
+.B wayhud \-\-listen
+binds a datagram socket and shows what arrives on it, one message per
+datagram. It is the same overlay drawn the same way; what differs is where the
+message comes from and how long the process stays.
+.PP
+A datagram rather than a stream or a FIFO, so that one send is one message:
+a notification body carrying newlines needs no framing and no escaping. It
+also fails the right way round. Opening a FIFO for writing blocks until a
+reader arrives, so a hook run from a notification daemon would leave a process
+hung for every notification while nothing was listening; sending to a socket
+nobody is bound to returns an error at once.
+.PP
+Anything that can write a datagram can be a client:
+.PP
+.RS
+.nf
+.ft B
+printf '%s' \(dqDISK 0 OK\(dq | socat \- UNIX\-SENDTO:\(dq$XDG_RUNTIME_DIR/wayhud.sock\(dq
+.ft R
+.fi
+.RE
+.PP
+.B wayhud \-\-send
+does the same without the extra program, and reads
+.I TEXT
+from an argument or standard input exactly as the one-shot mode does. Pick a
+third-party tool with care:
+.B nc \-uU
+delivers and then waits for a reply that never comes, so it hangs unless
+something kills it.
+.SS What arrives, and when it goes
+A message joins the one on screen rather than replacing it. While the block is
+being revealed or held, an arrival is appended as a line, only that line is
+typed, and the hold starts again from it. A vanish is a commit point: what
+arrives during one waits for it to finish and then starts a block of its own,
+so a burst cannot hold the overlay up forever.
+.PP
+The block is bounded. It keeps the last
+.B lines
+of text, or ten lines when no reservation is set, dropping from the top.
+.PP
+Reserve the block with
+.B \-\-lines
+and
+.BR \-\-width .
+Both are what stop the surface resizing as the message grows, and a surface
+that resizes is one the compositor places again on every notification.
+.B \-\-reveal \(aqscroll=true\(aq
+then reads as a terminal: the newest line stays on the bottom of the block and
+the earlier ones rise.
+.PP
+The style is the listener's. A client sends text and nothing else, so a
+notification hook cannot decide what the overlay looks like, and the block can
+be sized before the first message arrives.
+.PP
+The socket is created with owner-only permission under
+.IR $XDG_RUNTIME_DIR ,
+which is itself private. A path left behind by a listener that did not exit
+cleanly is reused; one that something still answers on is refused.
 .SH CONFIGURATION
 .B wayhud
 reads

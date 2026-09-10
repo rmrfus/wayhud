@@ -37,6 +37,10 @@ pub struct Hud {
     /// Fixed caret width in logical pixels, measured from the advance of `M`.
     /// Using the current glyph advance would resize it in proportional fonts.
     caret_width: f64,
+    /// Height of one line in logical pixels, measured from the same probe.
+    /// A `lines` reservation is this times the count, so the block a listener
+    /// grows into is sized before the first message arrives.
+    line_height: f64,
 }
 
 impl Hud {
@@ -78,18 +82,19 @@ impl Hud {
             style.font
         );
         // Use the default font map because this runs before `gtk::init`.
-        let caret_width = {
+        let (caret_width, line_height) = {
             let ctx = pangocairo::FontMap::default().create_context();
             let probe = pango::Layout::new(&ctx);
             probe.set_font_description(Some(&font));
             probe.set_text("M");
             let (cell, _, line) = caret_pos(&probe, "M", 1);
-            if cell > 0.0 {
+            let caret = if cell > 0.0 {
                 cell
             } else {
                 // Fall back to half the line height if `M` has no advance.
                 line * 0.5
-            }
+            };
+            (caret, line)
         };
         let timeline = Timeline::new(&text, &style.reveal, style.timeout_ms, &style.vanish, seed);
         let outline_width = outline_width(&font, style.outline_width);
@@ -100,6 +105,7 @@ impl Hud {
             scanlines,
             outline_width,
             caret_width,
+            line_height,
             font,
             timeline,
             style,
@@ -196,15 +202,30 @@ fn fit_width(layout: &pango::Layout, max_width: i32, pinned: bool) {
     }
 }
 
-/// A shaped message and the width of the block it sits in, in logical pixels.
+/// A shaped message and the box it sits in, in logical pixels.
 ///
 /// One per output, built together and used together. The surface is sized
-/// from `width` and pango positions lines for a non-left alignment inside it,
-/// so the two must never be read from different places: that disagreement is
-/// what draws a centred line outside the surface, i.e. nothing at all.
+/// from this box and pango positions lines for a non-left alignment inside
+/// `width`, so the box and the surface must never be read from different
+/// places: that disagreement is what draws a centred line outside the surface,
+/// i.e. nothing at all.
+///
+/// Both may be larger than the text. `width` is pinned by the style's `width`
+/// and `height` by its `lines`, which is how a listener keeps one still box to
+/// grow a message into rather than resizing the surface on every arrival.
 struct Block {
     layout: pango::Layout,
     width: i32,
+    height: i32,
+}
+
+/// Height of the block: the `lines` reservation when the style sets one, and
+/// the measured text otherwise.
+fn block_height(style: &Style, layout: &pango::Layout, line_height: f64) -> i32 {
+    match style.lines {
+        Some(n) => (line_height * n as f64).ceil() as i32,
+        None => layout.pixel_size().1,
+    }
 }
 
 /// Width of the text block: the pinned `width` when the style sets one, and
@@ -231,7 +252,7 @@ fn glow_mask(
     scale: f64,
 ) -> Option<gtk::cairo::ImageSurface> {
     let layout = &block.layout;
-    let (_, th) = layout.pixel_size();
+    let th = block.height;
     let tw = block.width;
     let w = (((tw as f64) + pad.x * 2.0) * scale).ceil() as i32;
     let h = (((th as f64) + pad.y * 2.0) * scale).ceil() as i32;
@@ -393,9 +414,9 @@ fn scanline_mask(w: i32, h: i32, sl: &Scanlines) -> Option<gtk::cairo::ImageSurf
 /// Vertical offset that places the current line at the bottom of the fixed
 /// text block. Use the caret line box to handle mixed font heights.
 /// The visible count drives the offset during both reveal and untype.
-fn scroll_offset(layout: &pango::Layout, text: &str, visible: usize) -> f64 {
-    let (_, th) = layout.pixel_size();
-    let (_, cy, ch) = caret_pos(layout, text, visible);
+fn scroll_offset(block: &Block, text: &str, visible: usize) -> f64 {
+    let th = block.height;
+    let (_, cy, ch) = caret_pos(&block.layout, text, visible);
     // Clamp rounding errors so the final line has zero offset.
     (f64::from(th) - (cy + ch)).max(0.0)
 }
@@ -419,14 +440,79 @@ struct Frame {
     blink: Cell<bool>,
 }
 
-/// Show one overlay. `on_first_frame` runs once across all windows to start
-/// audio at the animation epoch. `on_closed` runs when this window finishes.
+/// The message a set of windows is showing, and the counter that tells a
+/// window that its shaped layout is stale.
+///
+/// One-shot mode sets this once and never bumps it; a listener replaces it on
+/// every arrival. Both go through the same windows and the same drawing path,
+/// so a listener cannot drift away from what one invocation renders.
+pub struct Session {
+    current: RefCell<Rc<Hud>>,
+    generation: Cell<u64>,
+    /// A listener's windows outlive their messages: `Done` means nothing is
+    /// on screen, not that the overlay is finished.
+    persistent: bool,
+    /// One per window, run when a message arrives. Nothing here may register
+    /// another, which is what lets `show` hold the list while it runs them.
+    wake: RefCell<Vec<Box<dyn Fn()>>>,
+}
+
+impl Session {
+    /// One message, then the windows close and the process exits.
+    pub fn once(hud: Rc<Hud>) -> Rc<Session> {
+        Session::new(hud, false)
+    }
+
+    /// Windows that stay for the next message.
+    pub fn listening(hud: Rc<Hud>) -> Rc<Session> {
+        Session::new(hud, true)
+    }
+
+    fn new(hud: Rc<Hud>, persistent: bool) -> Rc<Session> {
+        Rc::new(Session {
+            current: RefCell::new(hud),
+            generation: Cell::new(0),
+            persistent,
+            wake: RefCell::new(Vec::new()),
+        })
+    }
+
+    pub fn hud(&self) -> Rc<Hud> {
+        self.current.borrow().clone()
+    }
+
+    /// Put a message up, restarting every window on it.
+    pub fn show(&self, hud: Rc<Hud>) {
+        // Dropped before the wake closures run: they read the message back.
+        {
+            *self.current.borrow_mut() = hud;
+        }
+        self.generation.set(self.generation.get().wrapping_add(1));
+        for wake in self.wake.borrow().iter() {
+            wake();
+        }
+    }
+
+    fn on_wake(&self, f: impl Fn() + 'static) {
+        self.wake.borrow_mut().push(Box::new(f));
+    }
+}
+
+/// Build and show the overlay on one monitor.
+///
+/// `on_first_frame` fires once across all windows, on whichever draws first,
+/// so sound and animation share an epoch. `on_closed` fires when the window is
+/// gone for good; a listener's windows hide between messages instead.
 pub fn present(
     monitor: &gdk::Monitor,
-    hud: Rc<Hud>,
+    session: Rc<Session>,
     on_first_frame: Rc<dyn Fn()>,
     on_closed: impl Fn() + 'static,
 ) -> Result<()> {
+    // Everything below the message comes from the style, which a listener does
+    // not let a client change, so it is resolved once per window.
+    let hud = session.hud();
+
     // Use a plain window to avoid GtkApplication session-bus and portal probes.
     let window = gtk::Window::new();
     window.add_css_class("wayhud");
@@ -443,31 +529,23 @@ pub fn present(
     let area = gtk::DrawingArea::new();
     window.set_child(Some(&area));
 
-    // Size from the complete text so typing cannot move or resize the surface.
     let pad = hud.pad();
     let max_width = text_budget(monitor, &hud.style, pad);
-    // Cache the shaped layout across frames.
-    let layout = Rc::new(hud.layout_for(&area, max_width));
-    // Cache glow by visible character count at this monitor's scale.
-    // `usize::MAX` marks an unbuilt mask; zero is a valid visible count.
     let device_scale = f64::from(monitor.scale_factor());
-    let glow_cache: RefCell<(usize, Option<Rc<gtk::cairo::ImageSurface>>)> =
-        RefCell::new((usize::MAX, None));
-    let (_, th) = layout.pixel_size();
-    let tw = block_width(&hud.style, &layout, max_width);
-    let block = Rc::new(Block {
-        layout: (*layout).clone(),
-        width: tw,
-    });
-    area.set_content_width(tw + (pad.x * 2.0) as i32);
-    area.set_content_height(th + (pad.y * 2.0) as i32);
-    // Built once per output, like the layout: the raster depends on nothing
-    // that changes, and a vanish repaints every frame.
-    let scanlines = hud.scanlines.as_ref().and_then(|sl| {
-        let w = ((f64::from(tw) + pad.x * 2.0) * device_scale).ceil() as i32;
-        let h = ((f64::from(th) + pad.y * 2.0) * device_scale).ceil() as i32;
-        scanline_mask(w, h, sl).map(Rc::new)
-    });
+
+    // Sized from the block, which `width` and `lines` pin when the style says
+    // so. Unpinned it is the message, and a listener replacing the message
+    // resizes the surface under the compositor; pinning is how that is stopped.
+    let seed = Block {
+        layout: hud.layout_for(&area, max_width),
+        width: 0,
+        height: 0,
+    };
+    let block: Rc<RefCell<Rc<Block>>> = Rc::new(RefCell::new(Rc::new(seed)));
+    // Cache glow by visible character count. `usize::MAX` marks an unbuilt
+    // mask; zero is a valid visible count.
+    let glow_cache: Rc<RefCell<(usize, Option<Rc<gtk::cairo::ImageSurface>>)>> =
+        Rc::new(RefCell::new((usize::MAX, None)));
 
     let frame = Rc::new(Frame {
         t0: Cell::new(None),
@@ -475,11 +553,55 @@ pub fn present(
         blink: Cell::new(false),
     });
 
-    area.set_draw_func({
-        let hud = hud.clone();
+    // Shaping a message and sizing the surface for it happens here rather than
+    // in the draw callback: it runs once per message, and a resize queued from
+    // inside a draw is a resize during a draw.
+    let reshape: Rc<dyn Fn()> = Rc::new({
+        let session = session.clone();
+        let area = area.clone();
+        let block = block.clone();
+        let glow_cache = glow_cache.clone();
         let frame = frame.clone();
+        move || {
+            let hud = session.hud();
+            let layout = hud.layout_for(&area, max_width);
+            let width = block_width(&hud.style, &layout, max_width);
+            let height = block_height(&hud.style, &layout, hud.line_height);
+            area.set_content_width(width + (pad.x * 2.0) as i32);
+            area.set_content_height(height + (pad.y * 2.0) as i32);
+            *block.borrow_mut() = Rc::new(Block {
+                layout,
+                width,
+                height,
+            });
+            // The mask was built for the message that just went away.
+            glow_cache.borrow_mut().0 = usize::MAX;
+            frame.t0.set(None);
+            frame.phase.set(Phase::Reveal { chars: 0 });
+            frame.blink.set(false);
+        }
+    });
+    reshape();
+
+    // Built once per output: the raster depends on nothing that changes, and a
+    // vanish repaints every frame. It covers the block, which a listener pins,
+    // so it survives every message.
+    let scanlines = hud.scanlines.as_ref().and_then(|sl| {
+        let b = block.borrow();
+        let w = ((f64::from(b.width) + pad.x * 2.0) * device_scale).ceil() as i32;
+        let h = ((f64::from(b.height) + pad.y * 2.0) * device_scale).ceil() as i32;
+        scanline_mask(w, h, sl).map(Rc::new)
+    });
+
+    area.set_draw_func({
+        let session = session.clone();
+        let frame = frame.clone();
+        let block = block.clone();
+        let glow_cache = glow_cache.clone();
         move |_area, cr, _w, _h| {
+            let hud = session.hud();
             let phase = frame.phase.get();
+            let block = block.borrow().clone();
             let glow = hud.glow.as_ref().and_then(|(rgba, g)| {
                 let visible = visible_chars(&hud, phase);
                 let mut cache = glow_cache.borrow_mut();
@@ -509,38 +631,66 @@ pub fn present(
         }
     });
 
-    area.add_tick_callback({
-        let hud = hud.clone();
+    // Re-armed on every message, because a finished one stops it: an idle
+    // listener should not hold a frame callback open all day.
+    let arm: Rc<dyn Fn()> = Rc::new({
+        let session = session.clone();
         let frame = frame.clone();
         let window = window.clone();
-        let first = Cell::new(true);
-        move |area, clock| {
-            let now = clock.frame_time();
-            let t0 = match frame.t0.get() {
-                Some(t) => t,
-                None => {
-                    frame.t0.set(Some(now));
-                    now
+        let area = area.clone();
+        let on_first_frame = on_first_frame.clone();
+        move || {
+            let session = session.clone();
+            let frame = frame.clone();
+            let window = window.clone();
+            let on_first_frame = on_first_frame.clone();
+            let first = Cell::new(true);
+            area.add_tick_callback(move |area, clock| {
+                let now = clock.frame_time();
+                let t0 = match frame.t0.get() {
+                    Some(t) => t,
+                    None => {
+                        frame.t0.set(Some(now));
+                        now
+                    }
+                };
+                if first.replace(false) {
+                    on_first_frame();
                 }
-            };
-            if first.replace(false) {
-                on_first_frame();
-            }
-            let t_ms = (now - t0) as f64 / 1000.0;
-            let phase = hud.timeline.phase_at(t_ms);
-            let blink = show_caret(&hud.style.reveal, &hud.style.vanish, phase, t_ms);
-            let changed = phase != frame.phase.get() || blink != frame.blink.get();
-            frame.phase.set(phase);
-            frame.blink.set(blink);
-            if changed {
-                area.queue_draw();
-            }
-            if phase == Phase::Done {
-                window.close();
+                let hud = session.hud();
+                let t_ms = (now - t0) as f64 / 1000.0;
+                let phase = hud.timeline.phase_at(t_ms);
+                let blink = show_caret(&hud.style.reveal, &hud.style.vanish, phase, t_ms);
+                let changed = phase != frame.phase.get() || blink != frame.blink.get();
+                frame.phase.set(phase);
+                frame.blink.set(blink);
+                if changed {
+                    area.queue_draw();
+                }
+                if phase != Phase::Done {
+                    return glib::ControlFlow::Continue;
+                }
+                if session.persistent {
+                    // Hidden rather than closed: the surface goes away between
+                    // messages, and so does the frame clock driving this.
+                    window.set_visible(false);
+                } else {
+                    window.close();
+                }
                 glib::ControlFlow::Break
-            } else {
-                glib::ControlFlow::Continue
-            }
+            });
+        }
+    });
+    arm();
+
+    session.on_wake({
+        let reshape = reshape.clone();
+        let arm = arm.clone();
+        let window = window.clone();
+        move || {
+            reshape();
+            window.set_visible(true);
+            arm();
         }
     });
 
@@ -550,6 +700,11 @@ pub fn present(
     });
 
     window.present();
+    if session.persistent {
+        // The surface has to exist for the input region below, but there is
+        // nothing to show until a message arrives.
+        window.set_visible(false);
+    }
 
     // Set an empty input region after the surface exists. Fail if it cannot be
     // set, since the overlay would otherwise intercept pointer events.
@@ -628,8 +783,7 @@ fn draw(
     // Bind the cached layout to this cairo context (font options, resolution)
     // without re-shaping it.
     pangocairo::functions::update_layout(cr, layout);
-    let (_, th) = layout.pixel_size();
-    let th = th as f64;
+    let th = f64::from(block.height);
     let pad = hud.pad();
 
     // Untype changes the visible count before drawing.
@@ -639,7 +793,7 @@ fn draw(
 
     // Translate ink, caret and glow together for terminal mode; zero otherwise.
     let scroll = if hud.scrolls() {
-        scroll_offset(layout, &hud.text, visible)
+        scroll_offset(block, &hud.text, visible)
     } else {
         0.0
     };
@@ -1053,6 +1207,7 @@ mod tests {
         Block {
             layout: layout.clone(),
             width: layout.pixel_size().0,
+            height: layout.pixel_size().1,
         }
     }
 
@@ -2213,7 +2368,7 @@ mod tests {
             let layout = bare_layout(text, &format!("{family} 36"));
             let (_, th) = layout.pixel_size();
             for visible in 0..=total {
-                let dy = scroll_offset(&layout, text, visible);
+                let dy = scroll_offset(&self_sized(&layout), text, visible);
                 let (_, cy, ch) = caret_pos(&layout, text, visible);
                 assert!(
                     (dy + cy + ch - f64::from(th)).abs() < 1e-6,
@@ -2223,12 +2378,12 @@ mod tests {
                 );
             }
             assert_eq!(
-                scroll_offset(&layout, text, total),
+                scroll_offset(&self_sized(&layout), text, total),
                 0.0,
                 "{family}: the finished message must sit where it always did"
             );
             assert!(
-                scroll_offset(&layout, text, 0) > 0.0,
+                scroll_offset(&self_sized(&layout), text, 0) > 0.0,
                 "{family}: the first line must start pushed down"
             );
         }
@@ -2240,7 +2395,7 @@ mod tests {
         let text = "aa\nbb\ncc";
         let layout = bare_layout(text, "Monospace 36");
         let steps: Vec<f64> = (0..=text.chars().count())
-            .map(|v| scroll_offset(&layout, text, v))
+            .map(|v| scroll_offset(&self_sized(&layout), text, v))
             .collect();
         assert!(
             steps.windows(2).all(|w| w[1] <= w[0]),
@@ -2257,7 +2412,11 @@ mod tests {
         let text = "no newlines here";
         let layout = bare_layout(text, "Monospace 36");
         for visible in 0..=text.chars().count() {
-            assert_eq!(scroll_offset(&layout, text, visible), 0.0, "at {visible}");
+            assert_eq!(
+                scroll_offset(&self_sized(&layout), text, visible),
+                0.0,
+                "at {visible}"
+            );
         }
     }
 }

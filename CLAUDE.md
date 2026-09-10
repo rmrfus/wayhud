@@ -37,6 +37,22 @@ the staged tree. Keep `--locked` and `-D warnings` in build and lint commands.
   Check named families with `fc-match`.
 - Use `GtkWindow` and `glib::MainLoop`. `GtkApplication` probes the Inhibit
   portal and caused GDK warnings under sway. Keep invocations independent.
+- One message per invocation is still the default and the whole of the
+  one-shot path; `--listen` is a second contract, not a replacement. Both go
+  through `Session` and the same `present`, so a listener cannot drift away
+  from what one invocation renders.
+- A listener's windows hide between messages rather than closing, and re-arm
+  their tick when one arrives: an idle listener must not hold a frame callback
+  open all day.
+- Reshaping a message and resizing its surface happens on arrival, never in
+  the draw callback: a resize queued from inside a draw is a resize during a
+  draw.
+- Clients send text and nothing else. The style is the listener's, which is
+  what lets the block be sized before the first message and keeps a
+  notification hook from deciding what the overlay looks like.
+- The socket is a datagram: one send is one message, so a body carrying
+  newlines needs no framing. A FIFO would block the sender until a reader
+  exists, hanging a hook for every notification while nothing listens.
 - Keep the namespace `wayhud`; renaming it breaks compositor rules.
 - Set an empty input region; otherwise the overlay intercepts pointer events.
 - Size the surface from the full text; sizing each prefix moves the window

@@ -82,12 +82,16 @@ See `man 1 wayhud` for CLI details and `man 5 wayhud` for configuration.
 | `--position`    | —         | `bottom-left`, `center`, …; `halign=`, `valign=`                   |
 | `--margin`      | —         | Gap from the anchored edge, logical px                             |
 | `--width`       | —         | Width of the text block, logical px                                |
+| `--lines`       | —         | Height of the block in lines                                       |
 | `--line-align`  | —         | `left`, `center`, `right` — lines inside the block                 |
 | `--reveal`      | —         | `instant` or `typewriter`; `cps=`, `cursor=`, `jitter=`, `scroll=` |
 | `--vanish`      | —         | Effect name; `ms=`, and `dir=` on `wash`                           |
 | `--sound`       | —         | `on`/`off`; `freq=`, `decay_ms=`, `gain=`, `every=`                |
 | `--raw`         | —         | Literal argument (no escape expansion)                             |
 | `--config`      | XDG path  | Config file location                                               |
+| `--listen`      | —         | Stay up, showing what arrives on the socket                        |
+| `--send`        | —         | Send TEXT to a running listener and exit                           |
+| `--socket`      | XDG path  | Listener socket                                                    |
 
 ### Flag fields
 
@@ -212,6 +216,7 @@ for all keys, defaults and ranges.
 | `valign`        | `top` `center` `bottom` | `center`                   | Vertical placement                                    |
 | `margin`        | int, logical px         | `64`                       | Gap from the anchored edge to the surface             |
 | `width`         | int, logical px         | measured text              | Pins the block; unset wraps to the monitor            |
+| `lines`         | int                     | measured text              | Reserves the block height; also what a listener keeps |
 | `line_align`    | `left` `center` `right` | `left`                     | Alignment of lines inside the block                   |
 | `timeout_ms`    | int, ms (max 3600000)   | `5000`                     | Hold after reveal                                     |
 | `reveal`        | table                   | typewriter, 28 cps, cursor | How the text appears                                  |
@@ -231,6 +236,9 @@ A few settings affect layout:
   both the wrapping budget and the block width, so the surface keeps it
   whatever arrives — the unused part is transparent, so pinning it costs
   nothing to look at. Clamped to the monitor.
+- `lines` reserves the block height up front, so a message growing inside it
+  does not resize the surface. Reserved room a message has not reached is
+  transparent, so it costs nothing to look at.
 - `line_align` aligns lines within the block, independently of its position.
   It only has room to work when `width` is pinned or the message wraps.
 - `scanlines = { period = 4.0, strength = 0.35, duty = 0.5 }` cuts dimmed
@@ -241,6 +249,57 @@ A few settings affect layout:
 
 `Monospace` uses the system's fontconfig default. Check named families with
 `fc-match "Family Name"`; unavailable fonts fall back silently.
+
+## Listener
+
+`wayhud --listen` binds a datagram socket and shows what arrives on it, one
+message per datagram. Same overlay, same drawing; what differs is where the
+message comes from and how long the process stays.
+
+```sh
+wayhud --listen -s notify &
+wayhud --send "DISK 0 OK"
+printf '%s' "REACTOR NOMINAL" | socat - UNIX-SENDTO:"$XDG_RUNTIME_DIR/wayhud.sock"
+```
+
+`--send` is the client that needs no extra program. The payload is plain text
+on a datagram socket, so anything that can send one works — but pick the tool
+with care: `nc -uU` delivers and then waits for a reply that never comes, so
+it hangs unless something kills it.
+
+A datagram rather than a stream or a FIFO, so one send is one message: a
+notification body carrying newlines needs no framing and no escaping. It also
+fails the right way round — opening a FIFO for writing blocks until a reader
+arrives, so a hook run from a notification daemon would leave a process hung
+for every notification while nothing was listening. Sending to a socket nobody
+is bound to returns an error at once, which is what a hook needs.
+
+A message **joins** the one on screen rather than replacing it. While the
+block is revealing or being held, an arrival is appended as a line, only that
+line is typed, and the hold starts again from it. A vanish is a commit point:
+what arrives during one waits for it to finish and then starts a block of its
+own, so a burst cannot hold the overlay up forever. The block keeps the last
+`lines` of text, or ten when nothing is reserved, dropping from the top.
+
+Reserve the block with `lines` and `width`. Both are what stop the surface
+resizing as the message grows, and a surface that resizes is one the
+compositor places again on every notification. With `scroll = true` it then
+reads as a terminal: the newest line stays on the bottom and earlier ones
+rise.
+
+The style is the listener's — a client sends text and nothing else, so a
+notification hook cannot decide what the overlay looks like, and the block can
+be sized before the first message arrives.
+
+From mako, whose `on-notify=exec` hands a hook only the notification id:
+
+```sh
+# ~/.config/mako/config
+# invisible=1
+# on-notify=exec wayhud-notify "$id"
+makoctl list -j | jq -r --argjson i "$1" \
+  '.[] | select(.id==$i) | .summary + " " + .body' | wayhud --send
+```
 
 ## sway
 

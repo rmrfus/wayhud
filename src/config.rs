@@ -24,6 +24,11 @@ pub const MAX_EDGE_PX: f64 = 128.0;
 /// the device-resolution glow mask allocated from it.
 pub const MAX_BLOCK_PX: i32 = 16_384;
 
+/// Most lines a block may reserve. Well past what any display shows, and
+/// bounded for the same reason as [`MAX_BLOCK_PX`]: the reservation sizes the
+/// surface and the masks allocated from it.
+pub const MAX_LINES: usize = 256;
+
 /// Widest scanline period, in device pixels. Unlike [`MAX_EDGE_PX`] this does
 /// not feed the padding; it is bounded so the mask cannot be built from a
 /// value that leaves a single gap across the whole message.
@@ -31,6 +36,7 @@ pub const MAX_SCANLINE_PERIOD_PX: f64 = 128.0;
 
 /// Physical horizontal placement, independent of writing direction.
 /// `Center` leaves both layer-shell edges unanchored.
+#[cfg_attr(test, derive(serde::Serialize))]
 #[derive(Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum HAlign {
@@ -40,6 +46,7 @@ pub enum HAlign {
 }
 
 /// Vertical placement; separate from [`HAlign`] to reject invalid axis values.
+#[cfg_attr(test, derive(serde::Serialize))]
 #[derive(Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum VAlign {
@@ -49,6 +56,7 @@ pub enum VAlign {
 }
 
 /// Alignment of lines *within* the text block (pango's own alignment).
+#[cfg_attr(test, derive(serde::Serialize))]
 #[derive(Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum LineAlign {
@@ -58,6 +66,7 @@ pub enum LineAlign {
 }
 
 /// How the text appears.
+#[cfg_attr(test, derive(serde::Serialize))]
 #[derive(Deserialize, Clone, Debug)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Reveal {
@@ -83,6 +92,7 @@ pub enum Reveal {
 }
 
 /// Which way a directional effect travels.
+#[cfg_attr(test, derive(serde::Serialize))]
 #[derive(Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum Dir {
@@ -91,6 +101,7 @@ pub enum Dir {
 }
 
 /// How the text goes away.
+#[cfg_attr(test, derive(serde::Serialize))]
 #[derive(Deserialize, Clone, Copy, Debug, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Vanish {
@@ -156,6 +167,7 @@ impl Vanish {
 }
 
 /// Halo behind the glyphs and outline. `radius = 0` disables inherited glow.
+#[cfg_attr(test, derive(serde::Serialize))]
 #[derive(Deserialize, Clone, Debug)]
 #[serde(default, deny_unknown_fields)]
 pub struct Glow {
@@ -178,6 +190,7 @@ impl Default for Glow {
 
 /// Horizontal gaps cut through the glyphs, their outline and their halo, to
 /// the rhythm of a raster scan. `strength = 0` disables an inherited set.
+#[cfg_attr(test, derive(serde::Serialize))]
 #[derive(Deserialize, Clone, Debug)]
 #[serde(default, deny_unknown_fields)]
 pub struct Scanlines {
@@ -201,6 +214,7 @@ impl Default for Scanlines {
 }
 
 /// Typewriter audio parameters, named to match `blyamk`.
+#[cfg_attr(test, derive(serde::Serialize))]
 #[derive(Deserialize, Clone, Debug)]
 #[serde(default, deny_unknown_fields)]
 pub struct Sound {
@@ -225,6 +239,7 @@ impl Default for Sound {
 }
 
 /// Everything that describes one on-screen message except the text itself.
+#[cfg_attr(test, derive(serde::Serialize))]
 #[derive(Deserialize, Clone, Debug)]
 #[serde(default, deny_unknown_fields)]
 pub struct Style {
@@ -243,6 +258,9 @@ pub struct Style {
     /// Width of the text block in logical pixels, excluding padding. `None`
     /// wraps to the monitor and sizes the surface from the measured text.
     pub width: Option<i32>,
+    /// Height of the block in lines. `None` sizes the surface from the
+    /// message; a reservation keeps it still while the message grows.
+    pub lines: Option<usize>,
     pub line_align: LineAlign,
     /// Resolved glow settings; `None` disables glow.
     pub glow: Option<Glow>,
@@ -266,6 +284,7 @@ impl Default for Style {
             valign: VAlign::Center,
             margin: 64,
             width: None,
+            lines: None,
             line_align: LineAlign::Left,
             glow: None,
             scanlines: None,
@@ -329,6 +348,12 @@ impl Style {
             anyhow::ensure!(
                 (1..=MAX_BLOCK_PX).contains(&w),
                 "width must be between 1 and {MAX_BLOCK_PX}, got {w}"
+            );
+        }
+        if let Some(n) = self.lines {
+            anyhow::ensure!(
+                (1..=MAX_LINES).contains(&n),
+                "lines must be between 1 and {MAX_LINES}, got {n}"
             );
         }
         if let Some(sl) = &self.scanlines {

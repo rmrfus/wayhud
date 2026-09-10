@@ -58,7 +58,29 @@ impl Timeline {
         vanish: &Vanish,
         seed: u64,
     ) -> Timeline {
+        Timeline::resuming(text, reveal, timeout_ms, vanish, seed, 0)
+    }
+
+    /// A timeline for a block whose first `shown` characters are already on
+    /// screen.
+    ///
+    /// They are given a step of zero, so they are visible on the first frame
+    /// and the typewriter runs only over what follows. A listener appends a
+    /// line to a block that is already up; retyping the whole block on every
+    /// arrival is the thing this exists to avoid.
+    ///
+    /// They are also struck from `audible`: a step of zero would otherwise
+    /// fire every one of their blips at once at t0.
+    pub fn resuming(
+        text: &str,
+        reveal: &Reveal,
+        timeout_ms: u64,
+        vanish: &Vanish,
+        seed: u64,
+        shown: usize,
+    ) -> Timeline {
         let chars = text.chars().count();
+        let shown = shown.min(chars);
         let steps = match reveal {
             Reveal::Instant => Vec::new(),
             // Defensive fallback for non-positive cps; normal input is
@@ -70,7 +92,10 @@ impl Timeline {
                 let mut rng = Rng::new(seed);
                 let mut t = 0.0;
                 (0..chars)
-                    .map(|_| {
+                    .map(|i| {
+                        if i < shown {
+                            return 0.0;
+                        }
                         // Clamping jitter to 1 keeps gaps non-negative and
                         // steps sorted.
                         let factor = 1.0 + jitter * (rng.unit() * 2.0 - 1.0);
@@ -83,7 +108,11 @@ impl Timeline {
         Timeline {
             reveal_ms: steps.last().copied().unwrap_or(0.0),
             steps,
-            audible: text.chars().map(|c| !c.is_whitespace()).collect(),
+            audible: text
+                .chars()
+                .enumerate()
+                .map(|(i, c)| i >= shown && !c.is_whitespace())
+                .collect(),
             chars,
             hold_ms: timeout_ms as f64,
             vanish_ms: vanish.ms() as f64,
@@ -195,6 +224,46 @@ mod tests {
 
     fn timeline(text: &str, reveal: &Reveal, timeout_ms: u64, vanish: &Vanish) -> Timeline {
         Timeline::new(text, reveal, timeout_ms, vanish, SEED)
+    }
+
+    #[test]
+    fn a_resumed_block_shows_what_was_already_typed_at_once() {
+        // Four characters up, two more arriving: the first four are there on
+        // the first frame and only the new pair is typed.
+        let tl = Timeline::resuming("abcdef", &tw(10.0), 500, &Vanish::Instant, 1, 4);
+        assert_eq!(tl.phase_at(0.0), Phase::Reveal { chars: 4 });
+        assert_eq!(tl.phase_at(100.0), Phase::Reveal { chars: 5 });
+        assert_eq!(tl.phase_at(200.0), Phase::Hold);
+        // The reveal is as long as the new part, not the whole block.
+        assert!(
+            (tl.reveal_ms - 200.0).abs() < 1e-9,
+            "reveal_ms {}",
+            tl.reveal_ms
+        );
+    }
+
+    #[test]
+    fn a_resumed_block_does_not_blip_for_what_is_already_up() {
+        // A step of zero would fire every earlier character's blip at t0.
+        let tl = Timeline::resuming("abcdef", &tw(10.0), 0, &Vanish::Instant, 1, 4);
+        let onsets = tl.onsets(1);
+        assert_eq!(onsets.len(), 2, "{onsets:?}");
+        assert!(onsets.iter().all(|&t| t > 0.0), "{onsets:?}");
+    }
+
+    #[test]
+    fn resuming_past_the_end_is_a_block_with_nothing_to_type() {
+        let tl = Timeline::resuming("abc", &tw(10.0), 500, &Vanish::Instant, 1, 99);
+        assert_eq!(tl.phase_at(0.0), Phase::Hold);
+        assert!(tl.onsets(1).is_empty());
+    }
+
+    #[test]
+    fn resuming_from_zero_is_the_plain_constructor() {
+        let a = Timeline::new("abcdef", &tw(10.0), 500, &Vanish::Instant, 7);
+        let b = Timeline::resuming("abcdef", &tw(10.0), 500, &Vanish::Instant, 7, 0);
+        assert_eq!(a.steps, b.steps);
+        assert_eq!(a.onsets(1), b.onsets(1));
     }
 
     #[test]

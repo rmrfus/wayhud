@@ -1,8 +1,10 @@
-//! One-shot layer-shell text overlay for sway. Each invocation creates
-//! independent surfaces and exits after its message finishes.
+//! Layer-shell text overlay for sway. One invocation shows one message and
+//! exits, with independent surfaces per invocation; `--listen` keeps the same
+//! surfaces for whatever arrives on a socket.
 
 mod config;
 mod hud;
+mod ipc;
 mod outputs;
 mod sound;
 mod spec;
@@ -11,6 +13,7 @@ mod timeline;
 
 use std::cell::{Cell, RefCell};
 use std::io::{IsTerminal, Read};
+use std::os::fd::OwnedFd;
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::rc::Rc;
@@ -18,15 +21,17 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use clap::Parser;
+use gtk::gio::prelude::SocketExtManual;
 use gtk::glib;
 
 use config::{
     Config, Dir, Glow, HAlign, LineAlign, MAX_LIFETIME_MS, MAX_TEXT_CHARS, Reveal, Scanlines,
     Sound, Style, VAlign, Vanish,
 };
-use hud::Hud;
+use hud::{Hud, Session};
 use outputs::OutputSpec;
 use spec::Spec;
+use timeline::Phase;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -89,6 +94,11 @@ struct Cli {
     #[arg(long)]
     width: Option<i32>,
 
+    /// Height of the block in lines. Reserves the room up front, so a message
+    /// growing inside it does not resize the surface.
+    #[arg(long)]
+    lines: Option<usize>,
+
     /// Alignment of lines within the block: left, center, right.
     #[arg(long)]
     line_align: Option<String>,
@@ -116,6 +126,18 @@ struct Cli {
     /// Config file (default: $XDG_CONFIG_HOME/wayhud/config.toml).
     #[arg(long)]
     config: Option<PathBuf>,
+
+    /// Send the message to a running listener instead of showing it here.
+    #[arg(long)]
+    send: bool,
+
+    /// Stay up and show what arrives on the socket. Takes no message.
+    #[arg(long, conflicts_with = "send")]
+    listen: bool,
+
+    /// Listener socket (default: $XDG_RUNTIME_DIR/wayhud.sock).
+    #[arg(long)]
+    socket: Option<PathBuf>,
 }
 
 fn main() -> ExitCode {
@@ -128,11 +150,26 @@ fn main() -> ExitCode {
     }
 }
 
+/// The listener socket: the flag, or the default under the runtime directory.
+fn socket_path(cli: &Cli) -> Result<PathBuf> {
+    match &cli.socket {
+        Some(p) => Ok(p.clone()),
+        None => ipc::default_path(),
+    }
+}
+
 fn run() -> Result<ExitCode> {
     let cli = Cli::parse();
-    let text = read_text(&cli)?;
-    let spec = OutputSpec::parse(&cli.output);
 
+    // A client carries text and nothing else: the style belongs to the
+    // listener, so it does not read the config at all.
+    if cli.send {
+        let text = read_text(&cli)?;
+        ipc::send(&socket_path(&cli)?, &text)?;
+        return Ok(ExitCode::SUCCESS);
+    }
+
+    let spec = OutputSpec::parse(&cli.output);
     let cfg = Config::load(cli.config.clone())?;
     let mut style = cfg.style(&cli.style)?;
     apply_overrides(&mut style, &cli)?;
@@ -141,12 +178,16 @@ fn run() -> Result<ExitCode> {
         .validate()
         .context("in the style built from the command line")?;
 
-    // Use a fresh jitter seed for each invocation.
-    let seed = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos() as u64)
-        .unwrap_or(0x5bd1_e995);
-    let hud = Rc::new(Hud::new(style, text, seed)?);
+    if cli.listen {
+        anyhow::ensure!(
+            cli.text.is_none(),
+            "--listen takes no message; it shows what arrives on the socket"
+        );
+        return listen(style, spec, socket_path(&cli)?);
+    }
+
+    let text = read_text(&cli)?;
+    let hud = Rc::new(Hud::new(style, text, seed())?);
     // Limit the total reveal, hold and vanish duration.
     let total = hud.timeline.total_ms();
     anyhow::ensure!(
@@ -188,8 +229,9 @@ fn run() -> Result<ExitCode> {
     // Exit after the last overlay closes.
     let main_loop = glib::MainLoop::new(None, false);
     let alive = Rc::new(Cell::new(monitors.len()));
+    let session = hud::Session::once(hud.clone());
     for monitor in monitors {
-        hud::present(&monitor, hud.clone(), on_first_frame.clone(), {
+        hud::present(&monitor, session.clone(), on_first_frame.clone(), {
             let alive = alive.clone();
             let main_loop = main_loop.clone();
             move || {
@@ -236,6 +278,217 @@ fn read_capped(r: impl Read) -> Result<String> {
         "message is longer than the maximum of {MAX_TEXT_CHARS} characters"
     );
     String::from_utf8(bytes).context("input is not valid UTF-8")
+}
+
+/// Lines a listener keeps when the style does not reserve any. The block has
+/// to be bounded or a burst grows the surface off the screen; `lines` is the
+/// reservation the surface is sized from, so where it is set it is also
+/// exactly how much room there is.
+const DEFAULT_LISTEN_LINES: usize = 10;
+
+/// The message a listener currently has up, and when it went up, so an
+/// arriving one can tell whether to grow the block or start a new one.
+struct Live {
+    hud: Rc<Hud>,
+    started: std::time::Instant,
+}
+
+/// Split a block into lines without allocating a line for an empty block.
+fn block_lines(text: &str) -> Vec<String> {
+    if text.is_empty() {
+        Vec::new()
+    } else {
+        text.split('\n').map(str::to_string).collect()
+    }
+}
+
+/// Stay up and show what arrives on the socket.
+///
+/// The rule is that a message joins the one on screen rather than replacing
+/// it: while the block is revealing or being held, an arrival is appended as a
+/// line and only that line is typed, and the hold starts again from it. A
+/// vanish is a commit point -- what arrives during one waits for it to finish
+/// and then starts a block of its own, so a burst cannot keep the overlay up
+/// forever.
+fn listen(style: Style, spec: OutputSpec, path: PathBuf) -> Result<ExitCode> {
+    // Bound the block: without it a burst grows the surface off the screen.
+    // `lines` is the reservation the surface is sized from, so it is also
+    // exactly how many lines there is room for.
+    let cap = style.lines.unwrap_or(DEFAULT_LISTEN_LINES);
+
+    let socket = ipc::bind(&path)?;
+    gtk::init().context("initialising GTK")?;
+    load_css();
+    let display = gtk::gdk::Display::default().context("no display")?;
+    let monitors = outputs::resolve(&display, &spec)?;
+
+    // Nothing on screen yet; the windows are built hidden.
+    let session = Session::listening(Rc::new(Hud::new(style.clone(), String::new(), seed())?));
+
+    let tracks: Rc<RefCell<Option<Tracks>>> = Rc::new(RefCell::new(None));
+    let playing: Rc<RefCell<Vec<std::thread::JoinHandle<()>>>> = Rc::new(RefCell::new(Vec::new()));
+    let on_first_frame: Rc<dyn Fn()> = Rc::new({
+        let tracks = tracks.clone();
+        let playing = playing.clone();
+        move || {
+            if let Some(t) = tracks.borrow_mut().take() {
+                let mut handles = playing.borrow_mut();
+                handles.extend(sound::play_detached(t.reveal, Duration::ZERO));
+                handles.extend(sound::play_detached(t.vanish, t.delay));
+                // A listener runs for days; finished threads must not pile up.
+                handles.retain(|h| !h.is_finished());
+            }
+        }
+    });
+
+    for monitor in &monitors {
+        hud::present(monitor, session.clone(), on_first_frame.clone(), || {})?;
+    }
+
+    let live: Rc<RefCell<Option<Live>>> = Rc::new(RefCell::new(None));
+    let pending: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+
+    // Put a block up, typing only what follows `shown`.
+    let put: Rc<dyn Fn(String, usize)> = Rc::new({
+        let session = session.clone();
+        let tracks = tracks.clone();
+        let live = live.clone();
+        move |text: String, shown: usize| {
+            let hud = Hud::new(style.clone(), text, seed()).map(|mut h| {
+                h.timeline = timeline::Timeline::resuming(
+                    &h.text,
+                    &h.style.reveal,
+                    h.style.timeout_ms,
+                    &h.style.vanish,
+                    seed(),
+                    shown,
+                );
+                h
+            });
+            let hud = match hud {
+                Ok(h) => Rc::new(h),
+                Err(e) => {
+                    eprintln!("wayhud: dropped a message: {e:#}");
+                    return;
+                }
+            };
+            *tracks.borrow_mut() = Some(mix(&hud));
+            *live.borrow_mut() = Some(Live {
+                hud: hud.clone(),
+                started: std::time::Instant::now(),
+            });
+            session.show(hud);
+        }
+    });
+
+    let mut buf = vec![0u8; ipc::MAX_DATAGRAM];
+    // gio only watches the descriptor: reading and decoding stay in `ipc`, so
+    // there is one path for it rather than one that runs and one that is
+    // merely tested. The duplicate is what gio takes ownership of.
+    let watch = gtk::gio::Socket::from_fd(OwnedFd::from(
+        socket.try_clone().context("duplicating the socket")?,
+    ))
+    .context("watching the socket")?;
+    let source = watch.create_source(
+        glib::IOCondition::IN,
+        None::<&gtk::gio::Cancellable>,
+        None,
+        glib::Priority::DEFAULT,
+        move |_, _| {
+            // Drain: several notifications can land between two wakeups.
+            while let Some(text) = ipc::recv(&socket, &mut buf) {
+                let text = text.trim_end_matches('\n').to_string();
+                if text.is_empty() {
+                    continue;
+                }
+                arrived(&live, &pending, &put, cap, text);
+            }
+            glib::ControlFlow::Continue
+        },
+    );
+    source.attach(Some(&glib::MainContext::default()));
+
+    glib::MainLoop::new(None, false).run();
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Decide what one arriving message does to what is on screen.
+fn arrived(
+    live: &Rc<RefCell<Option<Live>>>,
+    pending: &Rc<RefCell<Vec<String>>>,
+    put: &Rc<dyn Fn(String, usize)>,
+    cap: usize,
+    text: String,
+) {
+    let phase = live.borrow().as_ref().map(|l| {
+        let ms = l.started.elapsed().as_secs_f64() * 1000.0;
+        (
+            l.hud.text.clone(),
+            l.hud.timeline.phase_at(ms),
+            l.hud.timeline.total_ms() - ms,
+        )
+    });
+    match phase {
+        // Growing: the block gains a line and the hold starts again from it.
+        Some((current, Phase::Reveal { .. } | Phase::Hold, _)) => {
+            let mut lines = block_lines(&current);
+            lines.push(text);
+            let over = lines.len().saturating_sub(cap);
+            lines.drain(..over);
+            let kept = lines[..lines.len() - 1].join("\n");
+            // The separator counts as shown too, or the new line would be
+            // typed starting with the newline before it.
+            let shown = if kept.is_empty() {
+                0
+            } else {
+                kept.chars().count() + 1
+            };
+            put(lines.join("\n"), shown);
+        }
+        // A vanish is a commit point: let it finish, then start afresh.
+        Some((_, Phase::Vanish { .. }, remaining)) => {
+            pending.borrow_mut().push(text);
+            let wait = Duration::from_secs_f64((remaining.max(0.0) / 1000.0) + 0.01);
+            let pending = pending.clone();
+            let put = put.clone();
+            glib::timeout_add_local_once(wait, move || {
+                let held: Vec<String> = pending.borrow_mut().drain(..).collect();
+                if !held.is_empty() {
+                    put(held.join("\n"), 0);
+                }
+            });
+        }
+        // Nothing up, or the last block is finished.
+        _ => put(text, 0),
+    }
+}
+
+/// The blip tracks for one message, and how long the untype track waits.
+struct Tracks {
+    reveal: Vec<i16>,
+    vanish: Vec<i16>,
+    delay: Duration,
+}
+
+/// Mix a message's blips up front, so the clicks stay locked to the
+/// characters instead of inheriting the sound server's write scheduling.
+fn mix(hud: &Hud) -> Tracks {
+    let cfg = &hud.style.sound;
+    Tracks {
+        reveal: sound::typewriter_track(cfg, &hud.timeline.onsets(cfg.every)),
+        // The untype track is delayed rather than padded, so a long hold does
+        // not become allocated silence.
+        vanish: sound::typewriter_track(cfg, &hud.timeline.vanish_onsets(cfg.every)),
+        delay: Duration::from_secs_f64(hud.timeline.vanish_start().max(0.0)),
+    }
+}
+
+/// A fresh jitter seed, so two runs do not type identically.
+fn seed() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0x5bd1_e995)
 }
 
 /// Text comes from argv, or from stdin when argv is empty or "-".
@@ -329,6 +582,9 @@ fn apply_overrides(style: &mut Style, cli: &Cli) -> Result<()> {
     }
     if let Some(w) = cli.width {
         style.width = Some(w);
+    }
+    if let Some(n) = cli.lines {
+        style.lines = Some(n);
     }
     if let Some(a) = &cli.line_align {
         style.line_align = parse_line_align(a)?;
@@ -1128,6 +1384,8 @@ mod tests {
             ("--sound", "every=0"),
             ("--width", "0"),
             ("--width", "99999"),
+            ("--lines", "0"),
+            ("--lines", "9999"),
             ("--scanlines", "1"),
             ("--scanlines", "4,strength=1.5"),
             ("--scanlines", "4,duty=1"),
@@ -1142,7 +1400,14 @@ mod tests {
 
     #[test]
     fn every_style_field_is_reachable_from_the_command_line() {
-        // Check that CLI specs can express all style fields.
+        // Enumerated from the style rather than from a list kept beside it.
+        // A hand-written list is only as complete as whoever last added a
+        // field remembered to be, and it has twice not been: `scanlines` and
+        // `lines` both reached `Style` while this test stayed green.
+        //
+        // Serialising is what makes it notice. A field no flag below sets is
+        // still `None` here, and TOML has no null to write it as, so the
+        // conversion fails and names the field.
         let cli = Cli::parse_from([
             "wayhud",
             "x",
@@ -1156,12 +1421,14 @@ mod tests {
             "#030303,radius=9,alpha=0.4",
             "--scanlines",
             "6,strength=0.5,duty=0.25",
+            "--width",
+            "640",
+            "--lines",
+            "9",
             "--position",
             "top-right",
             "--margin",
             "7",
-            "--width",
-            "640",
             "--line-align",
             "center",
             "--timeout",
@@ -1177,6 +1444,33 @@ mod tests {
         apply_overrides(&mut s, &cli).unwrap();
         s.validate().expect("the spec above must be a legal style");
 
+        let table = toml::Table::try_from(&s)
+            .unwrap_or_else(|e| panic!("a style field has no flag on the command line above: {e}"));
+        let mut keys: Vec<&str> = table.keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            [
+                "color",
+                "font",
+                "glow",
+                "halign",
+                "line_align",
+                "lines",
+                "margin",
+                "outline",
+                "outline_width",
+                "reveal",
+                "scanlines",
+                "sound",
+                "timeout_ms",
+                "valign",
+                "vanish",
+                "width",
+            ],
+            "a style field was added or renamed"
+        );
+
         assert_eq!(s.font, "Sans 40");
         assert_eq!(s.color, "#010101");
         assert_eq!(s.outline.as_deref(), Some("#020202"));
@@ -1185,6 +1479,7 @@ mod tests {
         assert_eq!(s.valign, VAlign::Top);
         assert_eq!(s.margin, 7);
         assert_eq!(s.width, Some(640));
+        assert_eq!(s.lines, Some(9));
         assert_eq!(s.line_align, LineAlign::Center);
         let g = s.glow.expect("glow");
         assert_eq!((g.color.as_str(), g.radius, g.alpha), ("#030303", 9.0, 0.4));

@@ -21,6 +21,7 @@ valign = "center"           # top  | center | bottom
 margin = 64                 # surface-to-edge gap; anchored axes only
 line_align = "left"         # alignment of lines inside the block
 # width = 800               # pin the block; unset wraps to the monitor
+# lines = 6                 # reserve the height; unset sizes it per message
 timeout_ms = 5000           # hold after reveal
 # scroll = true keeps the current line at the bottom; see [style.boot].
 reveal = { kind = "typewriter", cps = 28, cursor = true }
@@ -46,6 +47,21 @@ sound = { enabled = false }
 color = "#8ec07c"           # gruvbox bright aqua
 reveal = { kind = "typewriter", cps = 18, cursor = true, jitter = 0.35 }
 vanish = { kind = "untype", ms = 900 }
+
+# For `wayhud --listen`. width and lines reserve the block, so the surface
+# stays put while messages accumulate into it; scroll keeps the newest at the
+# bottom. lines is also how many the listener keeps.
+[style.notify]
+font = "Monospace 24"
+halign = "left"
+valign = "bottom"
+margin = 32
+width = 900
+lines = 6
+timeout_ms = 6000
+reveal = { kind = "typewriter", cps = 90, scroll = true }
+vanish = { kind = "fade", ms = 300 }
+sound = { enabled = false }
 
 # A tube in the corner: green phosphor, bloom, and a raster over both.
 [style.crt]

@@ -177,6 +177,20 @@ as the glyphs. They are painted inside the existing padding and, unlike
 .BR glow.radius ,
 do not widen it.
 .TP
+.B lines
+.RI ( integer ,
+default: the measured text)
+.br
+Height of the block in lines. Left unset, the surface is sized from the
+message. Set, the room is reserved up front, so a message growing inside the
+block does not resize the surface; the reserved room a message has not reached
+is transparent and not visible.
+.IP
+This is also how much a listener keeps: see
+.B LISTENER
+in
+.BR wayhud (1).
+.TP
 .B line_align
 .RB ( left " | " center " | " right ,
 default
