@@ -534,6 +534,15 @@ wayhud \-\-scanlines \(aq4,strength=0.5\(aq \-\-glow \(aq#33ff33\(aq \e
 .ft R
 .fi
 .TP
+A listener, and two ways to feed it:
+.nf
+.ft B
+wayhud \-\-listen \-s notify &
+wayhud \-\-send \(dqDISK 0 OK\(dq
+journalctl \-f \-u nginx | while read \-r l; do wayhud \-\-send \(dq$l\(dq; done
+.ft R
+.fi
+.TP
 A quieter, slower blip:
 .nf
 .ft B
