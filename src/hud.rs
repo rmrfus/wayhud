@@ -656,20 +656,38 @@ pub fn present(
 
     // Re-armed on every message, because a finished one stops it: an idle
     // listener should not hold a frame callback open all day.
+    //
+    // Idempotent, and that is the point. A callback stops only at `Done`, and
+    // messages arriving faster than the hold never let one get there, so
+    // arming again on every arrival stacked a live callback per message per
+    // output -- each one waking on every frame to compute a phase already
+    // being computed. The one that is running picks the new message up on its
+    // own: it reads the session each tick.
+    let ticking = Rc::new(Cell::new(false));
     let arm: Rc<dyn Fn()> = Rc::new({
         let session = session.clone();
         let frame = frame.clone();
         let window = window.clone();
         let area = area.clone();
         let on_first_frame = on_first_frame.clone();
+        let ticking = ticking.clone();
         move || {
+            if ticking.replace(true) {
+                return;
+            }
             let session = session.clone();
             let frame = frame.clone();
             let window = window.clone();
             let on_first_frame = on_first_frame.clone();
-            let first = Cell::new(true);
+            let ticking = ticking.clone();
             area.add_tick_callback(move |area, clock| {
                 let now = clock.frame_time();
+                // A cleared epoch is what `reshape` leaves behind, so this is
+                // the first frame of a message rather than of a callback.
+                // Keyed on the callback instead, a re-armed one fired again
+                // for a message whose audio was already playing, and a reused
+                // one never fired at all.
+                let fresh = frame.t0.get().is_none();
                 let t0 = match frame.t0.get() {
                     Some(t) => t,
                     None => {
@@ -677,7 +695,7 @@ pub fn present(
                         now
                     }
                 };
-                if first.replace(false) {
+                if fresh {
                     on_first_frame();
                 }
                 let hud = session.hud();
@@ -693,6 +711,7 @@ pub fn present(
                 if phase != Phase::Done {
                     return glib::ControlFlow::Continue;
                 }
+                ticking.set(false);
                 if session.persistent {
                     // Hidden rather than closed: the surface goes away between
                     // messages, and so does the frame clock driving this.
@@ -737,6 +756,14 @@ pub fn present(
         .surface()
         .context("window has no surface after present; cannot make it click-through")?;
     surface.set_input_region(Some(&gtk::cairo::Region::create()));
+    // And again on every map: a listener hides its window between messages,
+    // and the region is a property of a surface that unmapping may take with
+    // it. Cheaper to set twice than to find out by trapping the pointer.
+    window.connect_map(|window| {
+        if let Some(surface) = window.surface() {
+            surface.set_input_region(Some(&gtk::cairo::Region::create()));
+        }
+    });
     Ok(())
 }
 

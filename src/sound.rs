@@ -93,7 +93,23 @@ pub fn play_detached(
     let generation = generation.clone();
     Some(std::thread::spawn(move || {
         if !delay.is_zero() {
-            std::thread::sleep(delay);
+            // Slept in slices rather than in one go. A listener replaces
+            // messages while these wait, and a thread that only looked at the
+            // generation on waking held a whole block's samples for the length
+            // of a hold it no longer had any reason to sit through: one such
+            // thread per message, for as long as the messages kept coming.
+            const SLICE: std::time::Duration = std::time::Duration::from_millis(100);
+            let deadline = std::time::Instant::now() + delay;
+            loop {
+                if generation.get() != issued {
+                    return;
+                }
+                let left = deadline.saturating_duration_since(std::time::Instant::now());
+                if left.is_zero() {
+                    break;
+                }
+                std::thread::sleep(left.min(SLICE));
+            }
             if generation.get() != issued {
                 return;
             }

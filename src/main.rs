@@ -303,6 +303,21 @@ fn block_lines(text: &str) -> Vec<String> {
     }
 }
 
+/// Keep the last `cap` lines, and report how many characters fell off the top
+/// so an already-revealed count can be shifted along with them.
+///
+/// Every path that builds a block goes through this. One datagram can carry
+/// several lines, and a burst held through a vanish arrives as a batch, so
+/// counting arrivals rather than lines let a block run past the room reserved
+/// for it -- which, with `scroll`, puts the write head under the bottom edge.
+fn cap_lines(lines: &mut Vec<String>, cap: usize) -> usize {
+    let over = lines.len().saturating_sub(cap.max(1));
+    // The separator that went with each dropped line counts as dropped too.
+    let dropped = lines[..over].iter().map(|l| l.chars().count() + 1).sum();
+    lines.drain(..over);
+    dropped
+}
+
 /// Stay up and show what arrives on the socket.
 ///
 /// The rule is that a message joins the one on screen rather than replacing
@@ -381,6 +396,19 @@ fn listen(mut style: Style, spec: OutputSpec, path: PathBuf) -> Result<ExitCode>
             // The message that was up is gone, and so is the untype track
             // waiting to erase it.
             audio_gen.bump();
+            let total = hud.timeline.total_ms();
+            if !total.is_finite() || total > MAX_LIFETIME_MS as f64 {
+                eprintln!(
+                    "wayhud: dropped a message that would stay up for {:.0} s; \
+                     the maximum is {} s",
+                    total / 1000.0,
+                    MAX_LIFETIME_MS / 1000
+                );
+                return;
+            }
+            // The message that was up is gone, and so is the untype track
+            // waiting to erase it.
+            audio_gen.bump();
             *tracks.borrow_mut() = Some(mix(&hud));
             *live.borrow_mut() = Some(Live {
                 hud: hud.clone(),
@@ -448,12 +476,14 @@ fn arrived(
                 Phase::Reveal { chars } => chars,
                 _ => current.chars().count(),
             };
+            let arrived = block_lines(&text);
             let mut lines = block_lines(&current);
-            lines.push(text);
-            let over = lines.len().saturating_sub(cap);
-            let dropped: usize = lines[..over].iter().map(|l| l.chars().count() + 1).sum();
-            lines.drain(..over);
-            let kept = lines[..lines.len() - 1].join("\n");
+            lines.extend(arrived.iter().cloned());
+            let dropped = cap_lines(&mut lines, cap);
+            // What is new may itself have been trimmed, if one datagram
+            // carried more lines than there is room for.
+            let fresh = arrived.len().min(lines.len());
+            let kept = lines[..lines.len() - fresh].join("\n");
             // The separator counts as shown too, or the new line would be
             // typed starting with the newline before it.
             let whole = if kept.is_empty() {
@@ -475,13 +505,20 @@ fn arrived(
             let put = put.clone();
             glib::timeout_add_local_once(wait, move || {
                 let held: Vec<String> = pending.borrow_mut().drain(..).collect();
-                if !held.is_empty() {
-                    put(held.join("\n"), 0);
+                if held.is_empty() {
+                    return;
                 }
+                let mut lines = block_lines(&held.join("\n"));
+                cap_lines(&mut lines, cap);
+                put(lines.join("\n"), 0);
             });
         }
         // Nothing up, or the last block is finished.
-        _ => put(text, 0),
+        _ => {
+            let mut lines = block_lines(&text);
+            cap_lines(&mut lines, cap);
+            put(lines.join("\n"), 0);
+        }
     }
 }
 
@@ -1094,6 +1131,44 @@ mod tests {
         let g = s.glow.expect("glow");
         assert_eq!(g.radius, 6.0);
         assert_eq!(g.color, Glow::default().color);
+    }
+
+    #[test]
+    fn a_datagram_of_several_lines_counts_as_its_lines() {
+        // One send can carry newlines -- that is the whole reason the socket
+        // takes datagrams -- so counting arrivals rather than lines let a
+        // block run past the room reserved for it.
+        let mut lines = block_lines("ab\ncd");
+        lines.extend(block_lines("1\n2\n3"));
+        assert_eq!(lines.len(), 5);
+        let dropped = cap_lines(&mut lines, 2);
+        assert_eq!(lines, ["2", "3"]);
+        // "ab", "cd" and "1", each with the separator that went with it.
+        assert_eq!(dropped, 3 + 3 + 2);
+    }
+
+    #[test]
+    fn the_cap_holds_whatever_the_block_is_built_from() {
+        // A burst held through a vanish arrives as one batch, and a first
+        // message can be longer than the block on its own; neither used to be
+        // capped at all.
+        for text in ["1\n2\n3\n4\n5", "only"] {
+            let mut lines = block_lines(text);
+            cap_lines(&mut lines, 3);
+            assert!(lines.len() <= 3, "{text:?} -> {lines:?}");
+        }
+        // A cap of zero would leave nothing to write on, so one line is the
+        // floor.
+        let mut lines = block_lines("a\nb");
+        cap_lines(&mut lines, 0);
+        assert_eq!(lines, ["b"]);
+    }
+
+    #[test]
+    fn a_block_inside_the_cap_is_left_alone() {
+        let mut lines = block_lines("a\nb");
+        assert_eq!(cap_lines(&mut lines, 5), 0);
+        assert_eq!(lines, ["a", "b"]);
     }
 
     #[test]
