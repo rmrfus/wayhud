@@ -75,6 +75,10 @@ the staged tree. Keep `--locked` and `-D warnings` in build and lint commands.
 - A listener resumes from what is actually revealed, not from the length of
   the block: counting all of it snaps a half-typed line to finished the moment
   the next message lands.
+- `audible` says which characters are worth a sound, never which pass is
+  running. The reveal skips what was already up; the erase does not, because
+  it undoes the whole block. Folding the cutoff into the mask silenced the
+  untype for every message but the last.
 - Keep `block_life` deterministic; rerolling per frame produces static.
 - Redraw only on state changes; static text must not reshape at 60 fps.
   Cache glow by visible count so it follows reveal and untype steps.

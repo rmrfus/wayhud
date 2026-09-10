@@ -44,8 +44,14 @@ pub struct Timeline {
     reveal_ms: f64,
     hold_ms: f64,
     vanish_ms: f64,
-    /// Cached non-whitespace character positions eligible for blips.
+    /// Cached non-whitespace character positions eligible for blips. Whether
+    /// a character is worth a sound is a property of the character, so this
+    /// says nothing about which pass is running.
     audible: Vec<bool>,
+    /// Characters already on screen when this began. The reveal skips their
+    /// blips -- they are not being typed -- but the erase does not, because
+    /// it takes the whole block apart whatever was typed when.
+    shown: usize,
     /// Untype erases character by character, so it gets blips of its own.
     untype: bool,
 }
@@ -69,8 +75,9 @@ impl Timeline {
     /// line to a block that is already up; retyping the whole block on every
     /// arrival is the thing this exists to avoid.
     ///
-    /// They are also struck from `audible`: a step of zero would otherwise
-    /// fire every one of their blips at once at t0.
+    /// Their blips are skipped by `onsets`: a step of zero would otherwise
+    /// fire all of them at once at t0. `vanish_onsets` keeps them, since the
+    /// erase is undoing the whole block rather than only what it just typed.
     pub fn resuming(
         text: &str,
         reveal: &Reveal,
@@ -108,11 +115,8 @@ impl Timeline {
         Timeline {
             reveal_ms: steps.last().copied().unwrap_or(0.0),
             steps,
-            audible: text
-                .chars()
-                .enumerate()
-                .map(|(i, c)| i >= shown && !c.is_whitespace())
-                .collect(),
+            audible: text.chars().map(|c| !c.is_whitespace()).collect(),
+            shown,
             chars,
             hold_ms: timeout_ms as f64,
             vanish_ms: vanish.duration_ms(chars) as f64,
@@ -147,7 +151,10 @@ impl Timeline {
             return Vec::new();
         }
         let every = every.max(1);
+        let shown = self.shown;
         self.blip_indices(every)
+            // What was already up is not being typed, so it does not click.
+            .filter(move |&i| i >= shown)
             // Use the same onset as the visual reveal.
             .filter_map(|i| self.steps.get(i).map(|ms| ms / 1000.0))
             .collect()
@@ -240,6 +247,18 @@ mod tests {
             "reveal_ms {}",
             tl.reveal_ms
         );
+    }
+
+    #[test]
+    fn a_resumed_block_erases_the_whole_of_itself_with_sound() {
+        // The erase undoes the block, not the part that arrived last: with
+        // the reveal's mask reused here, only the newly typed characters
+        // clicked, and a block built from several messages fell silent for
+        // everything but the last of them.
+        let tl = Timeline::resuming("abcdef", &tw(10.0), 0, &Vanish::Untype { cps: 10.0 }, 1, 4);
+        assert_eq!(tl.vanish_onsets(1).len(), 6, "{:?}", tl.vanish_onsets(1));
+        // And the reveal still only clicks for what it typed.
+        assert_eq!(tl.onsets(1).len(), 2);
     }
 
     #[test]
