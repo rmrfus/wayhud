@@ -18,10 +18,12 @@ pub fn typewriter_track(cfg: &Sound, onsets: &[f64]) -> Vec<i16> {
     }
     let blip = render_f64(&Params {
         freq: cfg.freq,
+        // Not a preset's to set: anything but an instant attack stops being a
+        // key struck and becomes a note swelling.
         attack_ms: 1.0,
         decay_ms: cfg.decay_ms,
-        brightness: 0.35,
-        detune: 0.09,
+        brightness: cfg.brightness,
+        detune: cfg.detune,
         gain: cfg.gain,
         rate: RATE,
     });
@@ -72,6 +74,15 @@ impl Generation {
     pub fn bump(&self) {
         self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     }
+}
+
+/// How long a track of `samples` mono samples lasts.
+///
+/// The wait after writing comes from here rather than from the server: a
+/// stream's reported latency is the connection's, and does not fall to zero
+/// while the stream is alive, so waiting for it to is waiting for ever.
+fn playback_time(samples: usize) -> std::time::Duration {
+    std::time::Duration::from_secs_f64(samples as f64 / f64::from(RATE))
 }
 
 /// Play on a worker thread after an optional delay. Return its join handle.
@@ -153,6 +164,7 @@ fn play(pcm: &[i16], abandoned: &dyn Fn() -> bool) -> Result<()> {
     // change while it is sounding: a message arriving mid-typing left the old
     // line still clicking underneath the new one.
     const SLICE: usize = (RATE as usize / 20) * 2; // 50 ms of mono i16
+    const SLICE_WAIT: std::time::Duration = std::time::Duration::from_millis(50);
     for part in bytes.chunks(SLICE) {
         if abandoned() {
             // Drop what is buffered rather than draining it; the point is to
@@ -162,23 +174,32 @@ fn play(pcm: &[i16], abandoned: &dyn Fn() -> bool) -> Result<()> {
         }
         simple.write(part)?;
     }
-    // Not `drain`: it waits for the buffer to empty without ever looking up,
-    // and a short track is entirely buffered by the time the last slice is
-    // written -- so the waiting, not the writing, is where most of a track's
-    // life is spent, and slicing the writes alone left it uninterruptible.
+    // A short track is entirely buffered by the time the last slice is
+    // written, so the waiting, not the writing, is where most of its life is
+    // spent: slicing the writes alone left it uninterruptible once buffered.
+    //
+    // The wait is the track's own length, which the samples give exactly.
+    // Asking the server how much is left does not work -- `get_latency`
+    // reports the latency of the connection, and that does not fall to zero
+    // while the stream is alive, so waiting for it to is waiting forever.
+    let plays_for = playback_time(pcm.len());
+    let deadline = std::time::Instant::now() + plays_for;
     loop {
         if abandoned() {
+            // Drop what is buffered rather than draining it; the point is to
+            // stop, not to finish quietly.
             let _ = simple.flush();
             return Ok(());
         }
-        let left = simple
-            .get_latency()
-            .unwrap_or(libpulse_binding::time::MicroSeconds(0));
-        if left.0 == 0 {
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        if left.is_zero() {
             break;
         }
-        std::thread::sleep(std::time::Duration::from_micros(left.0.min(50_000)));
+        std::thread::sleep(left.min(SLICE_WAIT));
     }
+    // By here the audio has played, so this returns at once; it is the
+    // guarantee that the tail is out rather than a wait of its own.
+    simple.drain()?;
     Ok(())
 }
 
@@ -196,6 +217,15 @@ mod tests {
         c.enabled = false;
         assert!(typewriter_track(&c, &[0.1, 0.2]).is_empty());
         assert!(typewriter_track(&cfg(), &[]).is_empty());
+    }
+
+    #[test]
+    fn a_track_is_waited_out_by_its_own_length() {
+        // Bounded by the samples, not by asking the server how much is left:
+        // the latency it reports is the connection's and never reaches zero,
+        // so a wait for that never ends.
+        assert_eq!(playback_time(RATE as usize).as_millis(), 1000);
+        assert_eq!(playback_time(0), std::time::Duration::ZERO);
     }
 
     #[test]

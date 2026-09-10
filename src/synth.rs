@@ -1,4 +1,5 @@
-//! Blip synthesis from `blyamk`, rendered as float samples for track mixing.
+//! Blip synthesis, rendered as float samples so a track can mix many of them
+//! at sub-sample offsets.
 
 use std::f64::consts::PI;
 
@@ -21,8 +22,9 @@ pub struct Partial {
     pub weight: f64,
 }
 
-/// Cluster ratios and weights measured from a bell sample in blyamk.
-/// Ratios are relative to the base frequency; the octave is twice the base.
+/// Cluster spacing and weights, measured from a bell. The first number is the
+/// multiplier `k` in the ratio `1 - k * detune`, so the partials sit below the
+/// base; the second is the weight, and the lowest of them is the loudest.
 const CLUSTER: [(f64, f64); 4] = [
     (0.00, 0.70), // base, ratio 1.0   (1000 Hz) — octave fundamental
     (1.00, 0.63), // 1 - 1*d           (925 Hz)

@@ -86,7 +86,7 @@ See `man 1 wayhud` for CLI details and `man 5 wayhud` for configuration.
 | `--line-align`  | —         | `left`, `center`, `right` — lines inside the block                 |
 | `--reveal`      | —         | `instant` or `typewriter`; `cps=`, `cursor=`, `jitter=`, `scroll=` |
 | `--vanish`      | —         | Effect name; `ms=`, `cps=` on `untype`, `dir=` on `wash`           |
-| `--sound`       | —         | `on`/`off`; `freq=`, `decay_ms=`, `gain=`, `every=`                |
+| `--sound`       | —         | `on`/`off`; `freq=`, `decay_ms=`, `detune=`, `gain=`, …            |
 | `--raw`         | —         | Literal argument (no escape expansion)                             |
 | `--config`      | XDG path  | Config file location                                               |
 | `--listen`      | —         | Stay up, showing what arrives on the socket                        |
@@ -229,7 +229,7 @@ for all keys, defaults and ranges.
 | `timeout_ms`    | int, ms (max 3600000)   | `5000`                     | Hold after reveal                                     |
 | `reveal`        | table                   | typewriter, 28 cps, cursor | How the text appears                                  |
 | `vanish`        | table                   | collapse, 420 ms           | How it goes away                                      |
-| `sound`         | table                   | on, 2100 Hz, gain 0.22     | The typewriter blip                                   |
+| `sound`         | table                   | on, 2100 Hz, gain 0.22     | The typewriter blip; see Sound below                  |
 
 A few settings affect layout:
 
@@ -343,10 +343,28 @@ bindsym $mod+Shift+h exec env GSK_RENDERER=opengl wayhud "LOCKED"
 
 ## Sound
 
-Blips are synthesised with parameters matching
-[blyamk](https://github.com/rmrfus/blyamk). Values from `blyamk -v` can be copied
-into a preset's `sound` table. `every = N` plays a blip every N characters;
-whitespace is silent.
+The blip is synthesised, so the binary carries no samples. It is a struck
+cluster: four sine partials at `1 - k * detune` of `freq`, for k of 0, 1, 2
+and 2.33, with the lowest of them the loudest, plus an octave above `freq`
+weighted by `brightness`. That is shaped by a 1 ms attack and an exponential
+ring-out to -60 dB over `decay_ms`, then normalised so its peak is `gain`.
+
+Which is to say: `freq` is the pitch, `decay_ms` is how long it rings,
+`detune` and `brightness` are the character, and `gain` is the level.
+
+Rates are not resolved beyond the refresh rate of the output. At 60 characters
+per second a character lasts about 17 ms, one frame on a 60 Hz screen, so a
+frame that slips shows one for twice as long as its neighbour — that goes for
+`reveal.cps` and `vanish.cps` alike.
+
+```toml
+sound = { freq = 3200, decay_ms = 12 }    # a dry tick
+sound = { freq = 900,  decay_ms = 300 }   # a small bell
+sound = { detune = 0 }                    # one tone: a plain beep
+sound = { every = 2 }                     # every other character
+```
+
+`every = N` blips once per N revealed characters; whitespace never blips.
 
 Audio and animation share character timings. Tracks are mixed before display
 and played through PulseAudio; the untype track is delayed until vanish starts.

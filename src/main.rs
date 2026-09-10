@@ -114,8 +114,8 @@ struct Cli {
     #[arg(long)]
     vanish: Option<String>,
 
-    /// Typewriter sound: "on", "off", or freq=, decay_ms=, gain= and every=.
-    /// E.g. "freq=1800,gain=0.3".
+    /// Typewriter sound: "on", "off", or freq=, decay_ms=, detune=,
+    /// brightness=, gain= and every=. E.g. "freq=1800,detune=0".
     #[arg(long)]
     sound: Option<String>,
 
@@ -974,6 +974,8 @@ fn parse_sound(spec: &str, current: &Sound) -> Result<Sound> {
     let enabled = s.headline("enabled")?;
     let freq = s.take_parsed::<f64>("freq")?;
     let decay_ms = s.take_parsed::<f64>("decay_ms")?;
+    let detune = s.take_parsed::<f64>("detune")?;
+    let brightness = s.take_parsed::<f64>("brightness")?;
     let gain = s.take_parsed::<f64>("gain")?;
     let every = s.take_parsed::<usize>("every")?;
     s.finish()?;
@@ -987,6 +989,8 @@ fn parse_sound(spec: &str, current: &Sound) -> Result<Sound> {
         },
         freq: freq.unwrap_or(current.freq),
         decay_ms: decay_ms.unwrap_or(current.decay_ms),
+        detune: detune.unwrap_or(current.detune),
+        brightness: brightness.unwrap_or(current.brightness),
         gain: gain.unwrap_or(current.gain),
         every: every.unwrap_or(current.every),
     })
@@ -1571,6 +1575,8 @@ mod tests {
             ("--sound", "freq=99999"),
             ("--sound", "decay_ms=1e9"),
             ("--sound", "gain=40"),
+            ("--sound", "detune=0.9"),
+            ("--sound", "brightness=2"),
             ("--sound", "every=0"),
             ("--width", "0"),
             ("--width", "99999"),
@@ -1628,7 +1634,7 @@ mod tests {
             "--vanish",
             "wash,ms=333,dir=up",
             "--sound",
-            "off,freq=1234,decay_ms=56,gain=0.7,every=3",
+            "off,freq=1234,decay_ms=56,detune=0.2,brightness=0.8,gain=0.7,every=3",
         ]);
         let mut s = Style::default();
         apply_overrides(&mut s, &cli).unwrap();
@@ -1697,10 +1703,12 @@ mod tests {
                 s.sound.enabled,
                 s.sound.freq,
                 s.sound.decay_ms,
+                s.sound.detune,
+                s.sound.brightness,
                 s.sound.gain,
                 s.sound.every
             ),
-            (false, 1234.0, 56.0, 0.7, 3)
+            (false, 1234.0, 56.0, 0.2, 0.8, 0.7, 3)
         );
     }
 

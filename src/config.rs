@@ -233,7 +233,8 @@ impl Default for Scanlines {
     }
 }
 
-/// Typewriter audio parameters, named to match `blyamk`.
+/// Typewriter audio. `freq` is the pitch, `decay_ms` how long it rings,
+/// `detune` and `brightness` its character, `gain` its level.
 #[cfg_attr(test, derive(serde::Serialize))]
 #[derive(Deserialize, Clone, Debug)]
 #[serde(default, deny_unknown_fields)]
@@ -241,6 +242,13 @@ pub struct Sound {
     pub enabled: bool,
     pub freq: f64,
     pub decay_ms: f64,
+    /// How far the cluster is spread below `freq`. Zero collapses it onto one
+    /// tone; the built-in value leaves the partials struck apart enough to
+    /// clank rather than beep.
+    pub detune: f64,
+    /// Weight of the octave above `freq`, against the loudest partial below
+    /// it. Zero drops it, one makes it as loud.
+    pub brightness: f64,
     pub gain: f64,
     /// Blip once every N revealed characters (1 = every character).
     pub every: usize,
@@ -252,6 +260,8 @@ impl Default for Sound {
             enabled: true,
             freq: 2100.0,
             decay_ms: 38.0,
+            detune: 0.09,
+            brightness: 0.35,
             gain: 0.22,
             every: 1,
         }
@@ -407,7 +417,8 @@ impl Style {
             "sound.every must be at least 1, got {}",
             self.sound.every
         );
-        // `decay_ms` sizes the synth buffer. Ranges match blyamk.
+        // `decay_ms` sizes the synth buffer, so it is bounded rather than
+        // merely sensible.
         let sound = &self.sound;
         anyhow::ensure!(
             (100.0..=8000.0).contains(&sound.freq),
@@ -418,6 +429,18 @@ impl Style {
             (10.0..=3000.0).contains(&sound.decay_ms),
             "sound.decay_ms must be between 10 and 3000, got {}",
             sound.decay_ms
+        );
+        anyhow::ensure!(
+            // Past 0.4 the lowest partial lands near zero: the cluster reaches
+            // 2.33 times the spread below the base.
+            (0.0..=0.4).contains(&sound.detune),
+            "sound.detune must be between 0 and 0.4, got {}",
+            sound.detune
+        );
+        anyhow::ensure!(
+            (0.0..=1.0).contains(&sound.brightness),
+            "sound.brightness must be between 0 and 1, got {}",
+            sound.brightness
         );
         anyhow::ensure!(
             (0.0..=1.0).contains(&sound.gain),

@@ -468,13 +468,44 @@ the selected preset for that invocation.
 Every key, its type and its default are documented in
 .BR wayhud (5).
 .SH SOUND
-Blip parameters match
-.BR blyamk (1)
-and can be copied from
-.B blyamk \-v
-into a
-.B [style.X.sound]
-table.
+The blip is synthesised, so the binary carries no samples. It is a struck
+cluster: four sine partials at
+.RI 1 " \-" " k " * " detune"
+of
+.BR freq ,
+for
+.I k
+of 0, 1, 2 and 2.33, with the lowest of them the loudest, plus an octave above
+.B freq
+weighted by
+.BR brightness .
+That is shaped by a 1 ms attack and an exponential ring-out to \-60 dB over
+.BR decay_ms ,
+then normalised so its peak is
+.BR gain .
+.PP
+So
+.B freq
+is the pitch,
+.B decay_ms
+is how long it rings,
+.B detune
+and
+.B brightness
+are the character, and
+.B gain
+is the level:
+.PP
+.RS
+.nf
+.ft B
+sound = { freq = 3200, decay_ms = 12 }    # a dry tick
+sound = { freq = 900,  decay_ms = 300 }   # a small bell
+sound = { detune = 0 }                    # one tone: a plain beep
+sound = { every = 2 }                     # every other character
+.ft R
+.fi
+.RE
 .PP
 Tracks are synthesised before display and played through PulseAudio using
 the animation's character timings. The untype track starts after the hold.

@@ -375,6 +375,12 @@ times the characters take three times as long -- lines are not the measure,
 one being as long as it likes -- and matches
 .B reveal.cps
 so that typing in and erasing out are stated in the same unit.
+.PP
+A rate is not resolved beyond the refresh rate of the output. At 60 characters
+per second a character lasts about 17 ms, which on a 60 Hz screen is one
+frame, so a frame that slips shows one character for twice as long as its
+neighbour. Below about 30 the steps have frames to spare and the erase reads
+evenly.
 .TP
 .B instant
 Gone on the frame the hold expires.
@@ -404,11 +410,24 @@ rather than
 .B dissolve
 Disappear in blocks with fixed pseudo\-random lifetimes.
 .SH SOUND
-Blips are synthesised at run time. Parameter names match
-.BR blyamk (1);
-values from
-.B blyamk \-v
-can be copied into this table.
+The blip is synthesised at run time, so the binary carries no samples. It is a
+struck cluster: four sine partials at
+.RI 1 " \-" " k " * " detune"
+of
+.BR freq ,
+for
+.I k
+of 0, 1, 2 and 2.33, with the lowest of them the loudest, plus an octave above
+.B freq
+weighted by
+.BR brightness .
+That is shaped by a 1 ms attack and an exponential ring-out to \-60 dB over
+.BR decay_ms ,
+then normalised so its peak is
+.BR gain .
+.PP
+The attack is not a setting: anything but an instant one stops being a key
+struck and becomes a note swelling.
 .TP
 .B enabled
 (boolean, default
@@ -431,6 +450,29 @@ Base frequency of the blip \- its overall pitch.
 .BR 38.0 )
 .br
 Decay time of the blip.
+.TP
+.B detune
+(float, 0\(en0.4; default
+.BR 0.09 )
+.br
+How far the cluster is spread below
+.BR freq .
+.B 0
+collapses it onto a single tone, which is a plain beep rather than something
+struck. The bound is where the lowest partial, at 2.33 times the spread,
+reaches zero.
+.TP
+.B brightness
+(float, 0\(en1; default
+.BR 0.35 )
+.br
+Weight of the octave above
+.BR freq ,
+against the loudest partial below it.
+.B 0
+drops it and leaves a duller blip;
+.B 1
+makes it as loud.
 .TP
 .B gain
 (float, 0\(en1; default

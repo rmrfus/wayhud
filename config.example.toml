@@ -27,7 +27,11 @@ timeout_ms = 5000           # hold after reveal
 reveal = { kind = "typewriter", cps = 28, cursor = true }
 # instant | fade | collapse | wash (dir = down|up) | untype | dissolve
 vanish = { kind = "collapse", ms = 420 }
-sound = { enabled = true, freq = 2100.0, decay_ms = 38.0, gain = 0.22, every = 1 }
+# freq is the pitch, decay_ms how long it rings, detune and brightness the
+# character (detune = 0 is a plain beep), gain the level, every = N one blip
+# per N characters.
+sound = { enabled = true, freq = 2100.0, decay_ms = 38.0, gain = 0.22 }
+# sound = { detune = 0.0, brightness = 0.6 }   # cleaner and brighter
 
 [style.alert]
 color = "#fb4934"           # gruvbox bright red

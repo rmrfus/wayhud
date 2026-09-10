@@ -28,7 +28,7 @@ the staged tree. Keep `--locked` and `-D warnings` in build and lint commands.
 - `src/outputs.rs`: GDK monitors and focused-output lookup through sway IPC.
 - `src/timeline.rs`: reveal, hold and vanish timing, shared with audio.
 - `src/hud.rs`: layer-shell windows, text layout and drawing.
-- `src/synth.rs`: blip synthesis from blyamk.
+- `src/synth.rs`: blip synthesis. Pure functions, no I/O.
 - `src/sound.rs`: track mixing and PulseAudio playback.
 
 ## Constraints
