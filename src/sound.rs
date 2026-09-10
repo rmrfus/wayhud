@@ -162,7 +162,23 @@ fn play(pcm: &[i16], abandoned: &dyn Fn() -> bool) -> Result<()> {
         }
         simple.write(part)?;
     }
-    simple.drain()?;
+    // Not `drain`: it waits for the buffer to empty without ever looking up,
+    // and a short track is entirely buffered by the time the last slice is
+    // written -- so the waiting, not the writing, is where most of a track's
+    // life is spent, and slicing the writes alone left it uninterruptible.
+    loop {
+        if abandoned() {
+            let _ = simple.flush();
+            return Ok(());
+        }
+        let left = simple
+            .get_latency()
+            .unwrap_or(libpulse_binding::time::MicroSeconds(0));
+        if left.0 == 0 {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_micros(left.0.min(50_000)));
+    }
     Ok(())
 }
 

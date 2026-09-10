@@ -268,7 +268,11 @@ fn glow_mask(
     scale: f64,
 ) -> Option<gtk::cairo::ImageSurface> {
     let layout = &block.layout;
-    let th = block.height;
+    // As tall as the text where that is taller than the block. A reservation
+    // the text has outgrown scrolls, and the lines the scroll brings into view
+    // are below the block's own height: sized to the block, the mask never
+    // held them, and they came up lit by nothing.
+    let th = block.height.max(layout.pixel_size().1);
     let tw = block.width;
     let w = (((tw as f64) + pad.x * 2.0) * scale).ceil() as i32;
     let h = (((th as f64) + pad.y * 2.0) * scale).ceil() as i32;
@@ -1815,6 +1819,29 @@ mod tests {
             two.abs_diff(one * 2) <= 1,
             "scale 1 gave {one} bands, scale 2 gave {two}; expected about {}",
             one * 2
+        );
+    }
+
+    #[test]
+    fn the_halo_covers_the_lines_a_scroll_brings_into_view() {
+        // A block the text has outgrown scrolls, and what it scrolls into
+        // view sits below the block's own height. Sized to the block, the
+        // mask never held those lines and they arrived lit by nothing.
+        let layout = bare_layout("one\ntwo\nthree\nfour\nfive", "Sans 24");
+        let (_, text_h) = layout.pixel_size();
+        let block = Block {
+            layout,
+            width: 400,
+            height: text_h / 4,
+        };
+        let pad = Pad { x: 8.0, y: 8.0 };
+        let text = block.layout.text().to_string();
+        let n = text.chars().count();
+        let mask = glow_mask(&block, &text, n, n, 6.0, pad, 1.0).expect("mask");
+        assert!(
+            f64::from(mask.height()) >= f64::from(text_h) + pad.y * 2.0,
+            "mask {} tall for {text_h} of text",
+            mask.height()
         );
     }
 
