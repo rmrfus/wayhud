@@ -20,6 +20,7 @@ halign = "center"           # left | center | right
 valign = "center"           # top  | center | bottom
 margin = 64                 # surface-to-edge gap; anchored axes only
 line_align = "left"         # alignment of lines inside the block
+# width = 800               # pin the block; unset wraps to the monitor
 timeout_ms = 5000           # hold after reveal
 # scroll = true keeps the current line at the bottom; see [style.boot].
 reveal = { kind = "typewriter", cps = 28, cursor = true }

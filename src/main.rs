@@ -84,6 +84,11 @@ struct Cli {
     #[arg(long)]
     margin: Option<i32>,
 
+    /// Width of the text block in logical pixels. Wraps to it and sizes the
+    /// surface from it, instead of from the measured text.
+    #[arg(long)]
+    width: Option<i32>,
+
     /// Alignment of lines within the block: left, center, right.
     #[arg(long)]
     line_align: Option<String>,
@@ -321,6 +326,9 @@ fn apply_overrides(style: &mut Style, cli: &Cli) -> Result<()> {
     }
     if let Some(m) = cli.margin {
         style.margin = m;
+    }
+    if let Some(w) = cli.width {
+        style.width = Some(w);
     }
     if let Some(a) = &cli.line_align {
         style.line_align = parse_line_align(a)?;
@@ -1118,6 +1126,8 @@ mod tests {
             ("--sound", "decay_ms=1e9"),
             ("--sound", "gain=40"),
             ("--sound", "every=0"),
+            ("--width", "0"),
+            ("--width", "99999"),
             ("--scanlines", "1"),
             ("--scanlines", "4,strength=1.5"),
             ("--scanlines", "4,duty=1"),
@@ -1150,6 +1160,8 @@ mod tests {
             "top-right",
             "--margin",
             "7",
+            "--width",
+            "640",
             "--line-align",
             "center",
             "--timeout",
@@ -1172,6 +1184,7 @@ mod tests {
         assert_eq!(s.halign, HAlign::Right);
         assert_eq!(s.valign, VAlign::Top);
         assert_eq!(s.margin, 7);
+        assert_eq!(s.width, Some(640));
         assert_eq!(s.line_align, LineAlign::Center);
         let g = s.glow.expect("glow");
         assert_eq!((g.color.as_str(), g.radius, g.alpha), ("#030303", 9.0, 0.4));

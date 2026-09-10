@@ -211,6 +211,31 @@ further by padding for the outline, glow and caret. Padding grows with font
 size and glow radius; caret width adds horizontal padding only.
 .IP
 Centred axes ignore this value.
+.TP
+.B width
+.RI ( integer ,
+.IR pixels ;
+default: the measured text)
+.br
+Width of the text block, excluding the padding around it. Left unset, lines
+wrap to the monitor and the surface is sized from the text that results, so a
+short message gets a narrow surface and a long one a wide surface.
+.IP
+Set, it is both the wrapping budget and the width of the block, whatever the
+message: text wraps at this value and the surface keeps this width. Since the
+surface is transparent, room the message does not use is not visible, so
+pinning it costs nothing to look at and stops the block resizing from one
+message to the next.
+.IP
+A value wider than the monitor is clamped to it. Wider than the screen the
+block would be clipped at both edges, and
+.B line_align
+would place lines outside the surface entirely.
+.IP
+This is also what makes
+.B line_align
+do something for a short message: with the block sized from the text there is
+no room inside it to align within.
 .SS Timing
 .TP
 .B timeout_ms

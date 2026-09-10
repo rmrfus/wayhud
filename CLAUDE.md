@@ -43,6 +43,10 @@ the staged tree. Keep `--locked` and `-D warnings` in build and lint commands.
   during typing.
 - Wrap to monitor width, then shrink the layout to measured text width;
   otherwise centred lines can land outside the surface and appear blank.
+- The block width is one number, carried by `Block`: pango aligns lines inside
+  it and the surface is sized from it, so reading the two from different places
+  draws a centred line outside the surface. `width` pins it; unset it is the
+  measured text.
 - Never mix device pixels into screen geometry: at scale=2, sizes double.
   Convert device-resolution masks back to logical coordinates when painting.
 - Scale outline width with the font unless configured; a fixed 5px stroke

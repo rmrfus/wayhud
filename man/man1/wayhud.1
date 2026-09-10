@@ -194,6 +194,12 @@ margin.
 Gap from the anchored edge to the surface, in logical pixels. The surface
 includes padding for the outline, glow and caret. Centred axes ignore it.
 .TP
+.BR \-\-width " \fIPX\fR"
+Width of the text block in logical pixels, excluding padding. Unset, lines
+wrap to the monitor and the surface is sized from the measured text. Set, it
+is both the wrapping budget and the width of the block, so the surface keeps
+that width whatever the message. Clamped to the monitor.
+.TP
 .BR \-\-line\-align " \fIALIGN\fR"
 Alignment of the lines within the text block:
 .BR left ,
@@ -400,6 +406,13 @@ A boot log crawling up the bottom corner:
 .ft B
 wayhud \-\-reveal \(aqscroll=true\(aq \-\-position bottom\-left \e
        \(dqCHECKING DISKS\enMOUNTING /\enOK\(dq
+.ft R
+.fi
+.TP
+A long line, wrapped into a fixed block:
+.nf
+.ft B
+journalctl \-n 1 \-u nginx | wayhud \-\-width 900 \-\-reveal instant
 .ft R
 .fi
 .TP

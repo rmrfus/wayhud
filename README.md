@@ -81,6 +81,7 @@ See `man 1 wayhud` for CLI details and `man 5 wayhud` for configuration.
 | `--scanlines`   | —         | Period in device px or `none`; `strength=`, `duty=`                |
 | `--position`    | —         | `bottom-left`, `center`, …; `halign=`, `valign=`                   |
 | `--margin`      | —         | Gap from the anchored edge, logical px                             |
+| `--width`       | —         | Width of the text block, logical px                                |
 | `--line-align`  | —         | `left`, `center`, `right` — lines inside the block                 |
 | `--reveal`      | —         | `instant` or `typewriter`; `cps=`, `cursor=`, `jitter=`, `scroll=` |
 | `--vanish`      | —         | Effect name; `ms=`, and `dir=` on `wash`                           |
@@ -210,6 +211,7 @@ for all keys, defaults and ranges.
 | `halign`        | `left` `center` `right` | `center`                   | Horizontal placement on the output                    |
 | `valign`        | `top` `center` `bottom` | `center`                   | Vertical placement                                    |
 | `margin`        | int, logical px         | `64`                       | Gap from the anchored edge to the surface             |
+| `width`         | int, logical px         | measured text              | Pins the block; unset wraps to the monitor            |
 | `line_align`    | `left` `center` `right` | `left`                     | Alignment of lines inside the block                   |
 | `timeout_ms`    | int, ms (max 3600000)   | `5000`                     | Hold after reveal                                     |
 | `reveal`        | table                   | typewriter, 28 cps, cursor | How the text appears                                  |
@@ -224,7 +226,13 @@ A few settings affect layout:
 - `glow = { color = "#b8bb26", radius = 12.0, alpha = 0.55 }` adds a halo
   behind the outline. A larger radius increases padding and reduces wrapping
   width. `radius = 0` disables inherited glow.
+- `width` pins the text block. Unset, lines wrap to the monitor and the
+  surface is sized from the text, so it changes with the message. Set, it is
+  both the wrapping budget and the block width, so the surface keeps it
+  whatever arrives — the unused part is transparent, so pinning it costs
+  nothing to look at. Clamped to the monitor.
 - `line_align` aligns lines within the block, independently of its position.
+  It only has room to work when `width` is pinned or the message wraps.
 - `scanlines = { period = 4.0, strength = 0.35, duty = 0.5 }` cuts dimmed
   bands across the message. `period` is in **device** pixels, so the raster
   keeps its pitch whatever the font size or output scale. The bands go over

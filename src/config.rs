@@ -19,6 +19,11 @@ pub const MAX_TEXT_CHARS: usize = 100_000;
 /// padding, reducing the wrapping width and enlarging the glow mask.
 pub const MAX_EDGE_PX: f64 = 128.0;
 
+/// Widest text block `width` may pin, in logical pixels. Larger than any
+/// display this runs on, and bounded because the block sizes the surface and
+/// the device-resolution glow mask allocated from it.
+pub const MAX_BLOCK_PX: i32 = 16_384;
+
 /// Widest scanline period, in device pixels. Unlike [`MAX_EDGE_PX`] this does
 /// not feed the padding; it is bounded so the mask cannot be built from a
 /// value that leaves a single gap across the whole message.
@@ -235,6 +240,9 @@ pub struct Style {
     pub valign: VAlign,
     /// Gap from the anchored edge, in logical px. Ignored on a centred axis.
     pub margin: i32,
+    /// Width of the text block in logical pixels, excluding padding. `None`
+    /// wraps to the monitor and sizes the surface from the measured text.
+    pub width: Option<i32>,
     pub line_align: LineAlign,
     /// Resolved glow settings; `None` disables glow.
     pub glow: Option<Glow>,
@@ -257,6 +265,7 @@ impl Default for Style {
             halign: HAlign::Center,
             valign: VAlign::Center,
             margin: 64,
+            width: None,
             line_align: LineAlign::Left,
             glow: None,
             scanlines: None,
@@ -314,6 +323,12 @@ impl Style {
                 (0.0..=1.0).contains(&glow.alpha),
                 "glow.alpha must be between 0 and 1, got {}",
                 glow.alpha
+            );
+        }
+        if let Some(w) = self.width {
+            anyhow::ensure!(
+                (1..=MAX_BLOCK_PX).contains(&w),
+                "width must be between 1 and {MAX_BLOCK_PX}, got {w}"
             );
         }
         if let Some(sl) = &self.scanlines {

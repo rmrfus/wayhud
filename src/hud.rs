@@ -143,7 +143,7 @@ impl Hud {
             LineAlign::Center => pango::Alignment::Center,
             LineAlign::Right => pango::Alignment::Right,
         });
-        fit_width(&layout, max_width);
+        fit_width(&layout, max_width, self.style.width.is_some());
         layout
     }
 }
@@ -177,16 +177,44 @@ fn font_points(font: &pango::FontDescription) -> f64 {
 
 /// Wrap to `max_width`, then shrink to the measured text width.
 /// Pango aligns lines within this width, which must match the surface.
-fn fit_width(layout: &pango::Layout, max_width: i32) {
+fn fit_width(layout: &pango::Layout, max_width: i32, pinned: bool) {
     if max_width <= 0 {
         return;
     }
     layout.set_width(max_width * pango::SCALE);
     // Allow character breaks for tokens wider than the monitor.
     layout.set_wrap(pango::WrapMode::WordChar);
+    // Shrinking is what makes the block the size of its text. A pinned width
+    // keeps the block, so it keeps the layout width too: alignment has to
+    // position lines inside whatever the surface is sized from.
+    if pinned {
+        return;
+    }
     let (text_width, _) = layout.pixel_size();
     if text_width > 0 {
         layout.set_width(text_width * pango::SCALE);
+    }
+}
+
+/// A shaped message and the width of the block it sits in, in logical pixels.
+///
+/// One per output, built together and used together. The surface is sized
+/// from `width` and pango positions lines for a non-left alignment inside it,
+/// so the two must never be read from different places: that disagreement is
+/// what draws a centred line outside the surface, i.e. nothing at all.
+struct Block {
+    layout: pango::Layout,
+    width: i32,
+}
+
+/// Width of the text block: the pinned `width` when the style sets one, and
+/// the measured text otherwise. `budget` is the wrapping budget the layout was
+/// built with, which `text_budget` has already clamped to the monitor.
+fn block_width(style: &Style, layout: &pango::Layout, budget: i32) -> i32 {
+    if style.width.is_some() {
+        budget
+    } else {
+        layout.pixel_size().0
     }
 }
 
@@ -194,7 +222,7 @@ fn fit_width(layout: &pango::Layout, max_width: i32) {
 /// blurring to avoid a hard edge at the caret. Rebuild when the visible count
 /// changes, blurring only the region containing ink and its halo.
 fn glow_mask(
-    layout: &pango::Layout,
+    block: &Block,
     text: &str,
     visible: usize,
     total: usize,
@@ -202,7 +230,9 @@ fn glow_mask(
     pad: Pad,
     scale: f64,
 ) -> Option<gtk::cairo::ImageSurface> {
-    let (tw, th) = layout.pixel_size();
+    let layout = &block.layout;
+    let (_, th) = layout.pixel_size();
+    let tw = block.width;
     let w = (((tw as f64) + pad.x * 2.0) * scale).ceil() as i32;
     let h = (((th as f64) + pad.y * 2.0) * scale).ceil() as i32;
     if w <= 0 || h <= 0 {
@@ -423,7 +453,12 @@ pub fn present(
     let device_scale = f64::from(monitor.scale_factor());
     let glow_cache: RefCell<(usize, Option<Rc<gtk::cairo::ImageSurface>>)> =
         RefCell::new((usize::MAX, None));
-    let (tw, th) = layout.pixel_size();
+    let (_, th) = layout.pixel_size();
+    let tw = block_width(&hud.style, &layout, max_width);
+    let block = Rc::new(Block {
+        layout: (*layout).clone(),
+        width: tw,
+    });
     area.set_content_width(tw + (pad.x * 2.0) as i32);
     area.set_content_height(th + (pad.y * 2.0) as i32);
     // Built once per output, like the layout: the raster depends on nothing
@@ -450,7 +485,7 @@ pub fn present(
                 let mut cache = glow_cache.borrow_mut();
                 if cache.0 != visible {
                     let mask = glow_mask(
-                        &layout,
+                        &block,
                         &hud.text,
                         visible,
                         hud.timeline.chars(),
@@ -465,7 +500,7 @@ pub fn present(
             draw(
                 cr,
                 &hud,
-                &layout,
+                &block,
                 glow.as_ref().map(|(m, c, a)| (m.as_ref(), *c, *a)),
                 scanlines.as_ref().map(|m| (m.as_ref(), device_scale)),
                 phase,
@@ -553,25 +588,35 @@ fn apply_anchors(window: &gtk::Window, style: &Style) {
 
 /// How wide the text may be on this monitor, in logical pixels.
 fn text_budget(monitor: &gdk::Monitor, style: &Style, pad: Pad) -> i32 {
-    let geom = monitor.geometry();
+    budget_for(monitor.geometry().width(), style, pad)
+}
+
+/// The arithmetic behind [`text_budget`], without a display to ask.
+fn budget_for(monitor_width: i32, style: &Style, pad: Pad) -> i32 {
     // Only anchored axes subtract margins from the available width.
     let margins = if style.halign == HAlign::Center {
         0
     } else {
         style.margin
     };
-    (geom.width() - margins - (pad.x * 2.0) as i32).max(1)
+    let room = (monitor_width - margins - (pad.x * 2.0) as i32).max(1);
+    // A pinned width still cannot exceed the room: a block wider than the
+    // monitor is clipped at both edges, and alignment would then place lines
+    // outside the surface, which is the failure `fit_width` exists to avoid.
+    style.width.map_or(room, |w| w.min(room)).max(1)
 }
 
 fn draw(
     cr: &gtk::cairo::Context,
     hud: &Hud,
-    layout: &pango::Layout,
+    block: &Block,
     glow: Option<(&gtk::cairo::ImageSurface, gdk::RGBA, f64)>,
     scanlines: Option<(&gtk::cairo::ImageSurface, f64)>,
     phase: Phase,
     caret_on: bool,
 ) {
+    let layout = &block.layout;
+    let block_w = block.width;
     let total = hud.timeline.chars();
     let (mut visible, vanish_p) = match phase {
         Phase::Reveal { chars } => (chars, 0.0),
@@ -622,8 +667,7 @@ fn draw(
                 let sx = 1.0 + 0.06 * vanish_p;
                 // Scale around the centre to keep the effect within the
                 // surface.
-                let (tw, _) = layout.pixel_size();
-                let (cx, cy) = (tw as f64 / 2.0, th / 2.0);
+                let (cx, cy) = (f64::from(block_w) / 2.0, th / 2.0);
                 cr.translate(cx, cy);
                 cr.scale(sx, sy);
                 cr.translate(-cx, -cy);
@@ -651,7 +695,7 @@ fn draw(
     }
 
     if let Some((mask, colour, glow_alpha)) = glow {
-        paint_glow(cr, mask, layout, colour, alpha * glow_alpha, whiten, pad);
+        paint_glow(cr, mask, block_w, colour, alpha * glow_alpha, whiten, pad);
     }
     // Use the blink state computed by the tick callback.
     let caret = caret_on.then(|| caret_rect(layout, &hud.text, visible, hud.caret_width));
@@ -661,7 +705,7 @@ fn draw(
     {
         paint_caret_glow(cr, caret, *colour, g.radius, *glow_alpha, alpha, whiten);
     }
-    paint_text(cr, layout, hud, visible, total, alpha, whiten, pad);
+    paint_text(cr, block, hud, visible, total, alpha, whiten, pad);
     if let Some(caret) = caret {
         set_color(cr, hud.fill, alpha, whiten);
         cr.rectangle(caret.x, caret.y, caret.w, caret.h);
@@ -675,8 +719,7 @@ fn draw(
                 let _ = cr.mask(wash_gradient(th, vanish_p, dir));
             }
             Vanish::Dissolve { .. } => {
-                let (tw, _) = layout.pixel_size();
-                if let Some(surface) = dissolve_mask(tw as f64, th, pad, vanish_p) {
+                if let Some(surface) = dissolve_mask(f64::from(block_w), th, pad, vanish_p) {
                     let _ = cr.mask_surface(&surface, -pad.x, -pad.y);
                 }
             }
@@ -704,14 +747,14 @@ fn draw(
 fn paint_glow(
     cr: &gtk::cairo::Context,
     mask: &gtk::cairo::ImageSurface,
-    layout: &pango::Layout,
+    block_w: i32,
     colour: gdk::RGBA,
     // `alpha` combines frame opacity and glow opacity.
     alpha: f64,
     whiten: f64,
     pad: Pad,
 ) {
-    let scale = f64::from(mask.width()) / ((f64::from(layout.pixel_size().0)) + pad.x * 2.0);
+    let scale = f64::from(mask.width()) / (f64::from(block_w) + pad.x * 2.0);
     if !scale.is_finite() || scale <= 0.0 {
         return;
     }
@@ -783,7 +826,7 @@ fn paint_caret_glow(
 )]
 fn paint_text(
     cr: &gtk::cairo::Context,
-    layout: &pango::Layout,
+    block: &Block,
     hud: &Hud,
     visible: usize,
     total: usize,
@@ -791,9 +834,10 @@ fn paint_text(
     whiten: f64,
     pad: Pad,
 ) {
+    let layout = &block.layout;
     if visible < total {
         let (cx, cy, ch) = caret_pos(layout, &hud.text, visible);
-        let (w, _) = layout.pixel_size();
+        let w = block.width;
         // Clip completed lines and the typed part of the current line. Allow
         // only stroke slack past the caret to avoid exposing the next glyph.
         // Rectangles start at `-pad`, so their widths must include that
@@ -1003,6 +1047,15 @@ mod tests {
         out
     }
 
+    /// A block sized from its own text, which is what every test that does
+    /// not pin a width wants.
+    fn self_sized(layout: &pango::Layout) -> Block {
+        Block {
+            layout: layout.clone(),
+            width: layout.pixel_size().0,
+        }
+    }
+
     /// Create a Pango layout without a GTK widget or display.
     fn bare_layout(text: &str, font: &str) -> pango::Layout {
         let ctx = pangocairo::FontMap::default().create_context();
@@ -1022,12 +1075,105 @@ mod tests {
         ] {
             let layout = bare_layout("REPRO", "Sans 36");
             layout.set_alignment(align);
-            fit_width(&layout, 1354);
+            fit_width(&layout, 1354, false);
             let (text_width, _) = layout.pixel_size();
             let first_x = layout.index_to_pos(0).x() / pango::SCALE;
             assert!(
                 first_x < text_width,
                 "{align:?}: first glyph at {first_x} is outside a {text_width}px window"
+            );
+        }
+    }
+
+    fn pinned(width: i32) -> Style {
+        Style {
+            font: "Sans 24".into(),
+            width: Some(width),
+            ..Style::default()
+        }
+    }
+
+    #[test]
+    fn a_pinned_width_keeps_the_block_whatever_the_text() {
+        // The surface is sized from the block, so a block that followed the
+        // text would resize under every message a server is handed.
+        let style = pinned(600);
+        for text in ["hi", &"long ".repeat(40)] {
+            let layout = bare_layout(text, &style.font);
+            fit_width(&layout, 600, true);
+            assert_eq!(
+                block_width(&style, &layout, 600),
+                600,
+                "block followed the text for {:?}",
+                &text[..text.len().min(20)]
+            );
+        }
+    }
+
+    #[test]
+    fn an_unpinned_block_is_still_the_measured_text() {
+        let style = Style {
+            font: "Sans 24".into(),
+            ..Style::default()
+        };
+        let layout = bare_layout("hi", &style.font);
+        fit_width(&layout, 600, false);
+        let measured = layout.pixel_size().0;
+        assert!(measured > 0 && measured < 600, "measured {measured}");
+        assert_eq!(block_width(&style, &layout, 600), measured);
+    }
+
+    #[test]
+    fn a_pinned_width_wraps_at_itself_not_at_the_monitor() {
+        let long = "wraps ".repeat(60);
+        let wide = bare_layout(&long, "Sans 24");
+        fit_width(&wide, 1800, true);
+        let narrow = bare_layout(&long, "Sans 24");
+        fit_width(&narrow, 400, true);
+        assert!(
+            narrow.line_count() > wide.line_count(),
+            "narrow {} lines, wide {} lines",
+            narrow.line_count(),
+            wide.line_count()
+        );
+    }
+
+    #[test]
+    fn a_pinned_width_is_still_clamped_to_the_monitor() {
+        // Wider than the screen draws off both edges, and takes the alignment
+        // of every line out with it.
+        let pad = Pad { x: 20.0, y: 20.0 };
+        // Centred: the margin is not taken, so the room is the screen less pad.
+        assert_eq!(budget_for(1920, &pinned(4000), pad), 1920 - 40);
+        // Anchored: the margin comes out of the room as well.
+        let anchored = Style {
+            halign: HAlign::Left,
+            ..pinned(4000)
+        };
+        assert_eq!(budget_for(1920, &anchored, pad), 1920 - 64 - 40);
+        // Inside the room it is honoured exactly, margin or not.
+        assert_eq!(budget_for(1920, &pinned(500), pad), 500);
+    }
+
+    #[test]
+    fn alignment_stays_inside_a_pinned_block() {
+        // The same rule the unpinned path has: pango positions lines inside
+        // the layout width, and the surface is sized from the block, so a
+        // centred line lands outside it unless the two are one number.
+        for align in [
+            pango::Alignment::Left,
+            pango::Alignment::Center,
+            pango::Alignment::Right,
+        ] {
+            let layout = bare_layout("short", "Sans 24");
+            layout.set_alignment(align);
+            fit_width(&layout, 600, true);
+            let (ink, _) = layout.extents();
+            let left = ink.x() as f64 / f64::from(pango::SCALE);
+            let right = left + ink.width() as f64 / f64::from(pango::SCALE);
+            assert!(
+                left >= -1.0 && right <= 601.0,
+                "{align:?}: ink spans {left:.1}..{right:.1} outside a 600px block"
             );
         }
     }
@@ -1045,7 +1191,7 @@ mod tests {
 
         let layout = bare_layout(&long, "Sans 36");
         layout.set_alignment(pango::Alignment::Center);
-        fit_width(&layout, 600);
+        fit_width(&layout, 600, false);
         assert!(layout.line_count() > 1, "text did not wrap");
         assert_eq!(
             layout.line_count(),
@@ -1113,7 +1259,7 @@ mod tests {
         for font in ["Sans 36", "Monospace 36"] {
             let layout = bare_layout(&"iW ".repeat(60), font);
             layout.set_alignment(pango::Alignment::Center);
-            fit_width(&layout, 600);
+            fit_width(&layout, 600, false);
             let (w, _) = layout.pixel_size();
             assert!(
                 w > 0 && w <= 600,
@@ -1310,7 +1456,7 @@ mod tests {
             draw(
                 &cr,
                 hud,
-                layout,
+                &self_sized(layout),
                 None,
                 mask.as_ref().map(|m| (m, scale)),
                 Phase::Hold,
@@ -1404,7 +1550,7 @@ mod tests {
             draw(
                 &cr,
                 hud,
-                layout,
+                &self_sized(layout),
                 None,
                 Some((&mask, scale)),
                 Phase::Hold,
@@ -1538,7 +1684,8 @@ mod tests {
             (f64::from(tw) + pad.x * 2.0) as i32,
             (f64::from(th) + pad.y * 2.0) as i32,
         );
-        let mask = glow_mask(&layout, &hud.text, 1, 1, radius, pad, 1.0).expect("mask");
+        let mask =
+            glow_mask(&self_sized(&layout), &hud.text, 1, 1, radius, pad, 1.0).expect("mask");
         let (colour, _) = hud.glow.as_ref().expect("glow resolved");
 
         let glyphs = lit_pixels(
@@ -1554,7 +1701,7 @@ mod tests {
         let halo = lit_pixels(
             |cr| {
                 cr.translate(pad.x, pad.y);
-                paint_glow(cr, &mask, &layout, *colour, 1.0, 0.0, pad);
+                paint_glow(cr, &mask, layout.pixel_size().0, *colour, 1.0, 0.0, pad);
             },
             w,
             h,
@@ -1599,7 +1746,16 @@ mod tests {
         {
             let cr = gtk::cairo::Context::new(&surface).expect("context");
             cr.translate(pad.x, pad.y);
-            paint_text(&cr, &layout, &hud, visible, text.len(), 1.0, 0.0, pad);
+            paint_text(
+                &cr,
+                &self_sized(&layout),
+                &hud,
+                visible,
+                text.len(),
+                1.0,
+                0.0,
+                pad,
+            );
         }
         surface.flush();
         let stride = surface.stride() as usize;
@@ -1666,7 +1822,7 @@ mod tests {
             (f64::from(th) + pad.y * 2.0) as i32,
         );
         let mask = glow_mask(
-            &layout,
+            &self_sized(&layout),
             text,
             text.chars().count(),
             text.chars().count(),
@@ -1684,7 +1840,7 @@ mod tests {
         {
             let cr = gtk::cairo::Context::new(&surface).expect("context");
             cr.translate(pad.x, pad.y);
-            paint_glow(&cr, &mask, &layout, *colour, 1.0, 0.0, pad);
+            paint_glow(&cr, &mask, layout.pixel_size().0, *colour, 1.0, 0.0, pad);
         }
         surface.flush();
         let stride = surface.stride() as usize;
@@ -1856,7 +2012,8 @@ mod tests {
             (f64::from(th) + pad.y * 2.0) as i32,
         );
         let visible = 3usize;
-        let mask = glow_mask(&layout, text, visible, 5, radius, pad, 1.0).expect("mask");
+        let mask =
+            glow_mask(&self_sized(&layout), text, visible, 5, radius, pad, 1.0).expect("mask");
         let (colour, _) = hud.glow.as_ref().expect("glow");
         let caret = caret_rect(&layout, text, visible, hud.caret_width);
 
@@ -1865,7 +2022,7 @@ mod tests {
         {
             let cr = gtk::cairo::Context::new(&surface).expect("context");
             cr.translate(pad.x, pad.y);
-            paint_glow(&cr, &mask, &layout, *colour, 1.0, 0.0, pad);
+            paint_glow(&cr, &mask, layout.pixel_size().0, *colour, 1.0, 0.0, pad);
         }
         surface.flush();
         let stride = surface.stride() as usize;
@@ -1901,8 +2058,8 @@ mod tests {
         let (tw, _) = layout.pixel_size();
         let pad = Pad { x: 24.0, y: 24.0 };
         for scale in [1.0, 2.0] {
-            let mask =
-                glow_mask(&layout, "glow", 4, 4, 8.0, pad, scale).expect("mask should build");
+            let mask = glow_mask(&self_sized(&layout), "glow", 4, 4, 8.0, pad, scale)
+                .expect("mask should build");
             let want = (((tw as f64) + pad.x * 2.0) * scale).ceil() as i32;
             assert_eq!(mask.width(), want, "scale {scale}");
         }
@@ -1930,7 +2087,7 @@ mod tests {
             gtk::cairo::ImageSurface::create(gtk::cairo::Format::A8, w, h).expect("surface");
         {
             let cr = gtk::cairo::Context::new(&surface).expect("context");
-            draw(&cr, hud, layout, None, None, phase, false);
+            draw(&cr, hud, &self_sized(layout), None, None, phase, false);
         }
         surface.flush();
         let stride = surface.stride() as usize;
